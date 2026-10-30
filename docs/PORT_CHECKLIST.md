@@ -1,12 +1,12 @@
 # Port checklist
 
-Games with no official Android version, from the games nxnative tested on Mac or iPhone (2026-10-29) and our own ports. A checked game has an `android.tsv` here; which ones play and how well: [PORT_STATUS.md](PORT_STATUS.md).
+Games with no official Android version, from the games nxnative tested on Mac or iPhone (2026-10-29) and our own ports. A checked game has an `android.tsv` here; which ones play and how well: the README's [Games](../README.md#games).
 
 Left out because they have an official Android release: Unpacking (ported here anyway), Balatro, Raging Loop, Baba Is You, BALL x PIT, Blasphemous, FINAL FANTASY CRYSTAL CHRONICLES Remastered Edition, Ghost Trick: Phantom Detective, Sea of Stars, Stardew Valley, and Absolum (Android on 2026-11-05).
 
 "Profile here": `nxnative/dm/games/<title ID>/` has the game's profile from nxnative. "Upstream profile": only seedds/nxnative has one, to read as a reference or starter, not to pull. "60 fps with X" is upstream's note: they run that update at 60 fps (30 on the Switch).
 
-**19 / 92 ported**
+**21 / 92 ported**
 
 - [x] 13 Sentinels: Aegis Rim · `01003FC01670C000`
 - [ ] Ace Attorney Investigations Collection · `010005501E68C000` · profile here
@@ -60,14 +60,14 @@ Left out because they have an official Android release: Unpacking (ported here a
 - [ ] OCTOPATH TRAVELER · `010057D006492000` · upstream profile
 - [ ] Octopath Traveler 0 · `01005270232F2000` · profile here · 60 fps with 1.0.5
 - [ ] Octopath Traveler II · `0100A3501946E000` · upstream profile · 60 fps with 1.1.1
-- [ ] Paper Mario: The Origami King · `0100A3900C3E2000` · upstream profile
+- [x] Paper Mario: The Origami King · `0100A3900C3E2000`
 - [ ] Paper Mario: The Thousand-Year Door · `0100ECD018EBE000` · profile here · 60 fps with 1.0.1
 - [ ] Patrick's Parabox · `0100E44016C22000` · profile here
 - [ ] Persona 4 Golden · `010062B01525C000` · upstream profile
 - [ ] Persona 5 Royal · `01005CA01580E000` · upstream profile
 - [ ] Pikmin 4 · `0100B7C00933A000` · upstream profile
 - [ ] Pokémon Brilliant Diamond · `0100000011D90000` · upstream profile · 60 fps with 1.3.0
-- [ ] Pokémon Legends: Arceus · `01001F5010DFA000` · upstream profile
+- [x] Pokémon Legends: Arceus · `01001F5010DFA000`
 - [ ] Pokémon Legends: Z-A · `0100F43008C44000` · profile here
 - [ ] Pokémon Scarlet · `0100A3D008C5C000` · upstream profile
 - [ ] Pokémon Shield · `01008DB008C2C000` · upstream profile

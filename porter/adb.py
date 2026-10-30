@@ -2,7 +2,7 @@
 # devices (a 6 GB RomFS), so small files go in batches and big files in 64 MB pieces that the device joins; a rerun resumes (files already at their size are skipped,
 # pieces already in place are kept). The port's own outputs are also compared by MD5: a rewriter cut changes a module without changing its size, and Unpacking's sdk cuts never
 # reached the device until they were. Pushes use -Z: compressing them took adbd down.
-import contextlib, hashlib, os, shlex, shutil, subprocess, tempfile, time
+import contextlib, hashlib, os, re, shlex, shutil, subprocess, tempfile, time
 from pathlib import Path
 
 
@@ -92,11 +92,22 @@ class Adb:
     def installed(self, package):
         return f'package:{package}' in self.shell(f'pm list packages {shlex.quote(package)}', check=False).split()
 
+    def version_code(self, package):   # the installed app's versionCode, None when unknown
+        try: out = self.shell(f'dumpsys package {shlex.quote(package)} | grep -m1 versionCode=', check=False)
+        except AdbError: return None
+        m = re.search(r'versionCode=(\d+)', out)
+        return int(m.group(1)) if m else None
+
     # ---- install ----
     def install(self, apk, package, replace_signer=False):
         """adb install -r. A package installed with another signing key cannot be updated: replace_signer uninstalls it first (its saves in internal storage go with it)"""
         try: self.run('install', '-r', apk, timeout=600, retries=1)
         except AdbError as e:
+            if 'INSTALL_FAILED_VERSION_DOWNGRADE' in str(e):   # Android installs over the same versionCode, never over a higher one
+                have = self.version_code(package)
+                raise AdbError(f'{package} is installed with a higher versionCode{f" ({have})" if have else ""} (a port of a later game version, a rebuild with --vercode-offset): '
+                               'port again with a --vercode-offset that lifts this build above it (the saves stay), install it beside that one with --package, '
+                               'or uninstall that one on the device (its saves are deleted with it)') from e
             if 'INSTALL_FAILED_UPDATE_INCOMPATIBLE' not in str(e): raise
             if not replace_signer:
                 raise AdbError(f'{package} is installed with another signing key (another build of the game, a development build): '

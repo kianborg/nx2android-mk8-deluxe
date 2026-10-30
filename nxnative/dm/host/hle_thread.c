@@ -696,6 +696,14 @@ int svc_thread(int num, uint64_t *regs) {
     if (me) me->yield_pending = 0;
     return r;
 }
+// DM_SLEEP_BT=<min ms>[-<max ms>] (live, a DM_CTL env line): the next 64 sleeps and timed waits (SleepThread, condition variables, WaitForAddress,
+// WaitSynchronization) whose time lies in that range, with their backtraces: who paces a game that holds a frame rate with no present interval (a frame limiter)
+static void wait_bt(const char *what, int64_t ns, uint64_t fp) {
+    static char last[32]; static double lo, hi; static _Atomic int nbt; const char *e = getenv("DM_SLEEP_BT");
+    if (!e || !*e) return;
+    if (strncmp(e, last, sizeof last - 1)) { snprintf(last, sizeof last, "%s", e); char *d; lo = strtod(e, &d); hi = *d == '-' ? strtod(d + 1, NULL) : 1e9; atomic_store(&nbt, 0); }
+    if (lo > 0 && ns >= (int64_t)(lo * 1e6) && ns <= (int64_t)(hi * 1e6) && atomic_fetch_add(&nbt, 1) < 64) { void dm_backtrace(uint64_t fp); LOG("%s %.2f ms", what, ns / 1e6); dm_backtrace(fp); }
+}
 static int svc_thread_impl(int num, uint64_t *regs) {
     { thr_t *me = pthread_getspecific(g_keythr); if (me) { me->last_svc = num; me->last_lr = regs[30]; me->nsvc++; } }
     if (g_flag.thr && num != 0x0B) { thr_t *me = pthread_getspecific(g_keythr); LOG("[%#x] svc %#x x0=%#llx x1=%#llx x2=%#llx x3=%#llx", me ? me->handle : 0, num, regs[0], regs[1], regs[2], regs[3]); }
@@ -726,6 +734,7 @@ static int svc_thread_impl(int num, uint64_t *regs) {
     case 0x0A: thread_exit(cur()); return 1;
     case 0x0B: {  // SleepThread(x0 ns); 0/-1/-2 = the various kinds of yield
         int64_t ns = (int64_t)regs[0];
+        wait_bt("SleepThread", ns, regs[29]);
         if ((ns > 0 && dm_detclock_enabled()) || ns >= 20000) dm_guest_sleep_ns(ns);
         // Yield (0 / -1 / -2), and sleeps shorter than 20 µs, which sleep_precise would return from at once: Super Mario Galaxy's Hagi polls with SleepThread(100 ns) (main+0x517c),
         // which kept a core at 100% (1.4 billion calls in 200 s); as yields they get the back-off below.
@@ -800,6 +809,7 @@ static int svc_thread_impl(int num, uint64_t *regs) {
     case 0x1B: pthread_mutex_lock(&G); lock_handoff(regs[0]); pthread_mutex_unlock(&G); regs[0] = 0; return 1;
     case 0x1C: {  // WaitProcessWideKeyAtomic(x0 lock address, x1 condition key, w2 tag, x3 timeout)
         thr_t *t = cur(); uint64_t addr = regs[0], key = regs[1];
+        wait_bt("condition wait", (int64_t)regs[3], regs[29]);
         pthread_mutex_lock(&G);
         // The order matters: first set the condition key = 1, then release the mutex. The SDK's InternalConditionVariable::Signal first reads the condition key in user mode, and does not issue svc 0x1D if it is 0;
         // grabbing the mutex in user mode does not go through G either. It used to do lock_handoff first and set the key after: after the release and before the key was set, another thread could grab the lock in user mode, change the condition, read key 0 and not wake anyone,
@@ -834,6 +844,7 @@ static int svc_thread_impl(int num, uint64_t *regs) {
     }
 
     case 0x34: {  // WaitForAddress(x0 address, w1 type, x2 value, x3 timeout): 0 wait if less than, 1 decrement if less than then wait, 2 wait if equal, 3 wait if the 64-bit value is equal
+        wait_bt("WaitForAddress", (int64_t)regs[3], regs[29]);
         // (Horizon 18; SDK 19's nn::os::WaitForAddress(const long*, long) uses it, which before fell into the 32-bit less-than test)
         thr_t *t = cur(); uint64_t addr = regs[0]; int type = (int)regs[1]; int32_t val = (int32_t)regs[2];
         pthread_mutex_lock(&G);
@@ -888,6 +899,7 @@ static int svc_thread_impl(int num, uint64_t *regs) {
         regs[0] = (uint64_t)r; return 1;
     }
     case 0x18: {  // WaitSynchronization(→w1 index; x1 handle array, w2 count, x3 timeout)
+        wait_bt("WaitSynchronization", (int64_t)regs[3], regs[29]);
         thr_t *t = cur(); const uint32_t *hs = (const uint32_t *)regs[1]; int n = (int)regs[2]; int64_t ns = (int64_t)regs[3];
         int64_t deadline = ns > 0 ? (dm_detclock_enabled() ? (int64_t)guest_ns() : now_mono_ns()) + ns : 0;
         pthread_mutex_lock(&G);

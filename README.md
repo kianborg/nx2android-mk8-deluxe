@@ -2,11 +2,27 @@
 
 Port your own Nintendo Switch games to Android, natively: the game's own arm64 code runs on the device, with the Switch's system services stood in for by a host and NVN graphics replayed on Vulkan. Pick the game's folder, click **Port**, and get an APK plus the game's data, installed on your device if you like. Bring your own game files and keys; nothing from any game is in this repository.
 
-This is the Android port of [nxnative](https://github.com/seedds/nxnative), which does the same on iPhone and iPad. How it is put together: [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md).
+This is the Android port of [nxnative](https://github.com/seedds/nxnative), which does the same on iPhone and iPad. Supported games: [Games](#games).
 
 ## Games
 
-Each game is a profile in `nxnative/dm/games/<title ID>/` with an `android.tsv`. Which games play: [docs/PORT_STATUS.md](docs/PORT_STATUS.md); which ones each release has been checked to port: [docs/RELEASE_CHECK.md](docs/RELEASE_CHECK.md). Native BC texture support is preferred. The Android runtime can decode BC1–BC7 textures on the CPU when the Vulkan driver lacks it, using more RAM and loading time. This fallback is experimental; GPU family alone does not establish game compatibility.
+These games play on Android. Tested on a Lenovo Legion Y700 (Snapdragon 8 Elite, Adreno 830). Native BC texture support is preferred. This fork also has an experimental CPU BC1–BC7 fallback for drivers without it, using more RAM and loading time. GPU family alone does not establish compatibility; the results below are from native-BC hardware.
+
+| | |
+|:---:|:---:|
+| ![13 Sentinels: Aegis Rim](docs/images/13-sentinels.jpg)<br>13 Sentinels: Aegis Rim<br><sub>update 1.10 · 60 fps</sub> | ![Advance Wars 1+2: Re-Boot Camp](docs/images/advance-wars-1-2-re-boot-camp.jpg)<br>Advance Wars 1+2: Re-Boot Camp<br><sub>base game 1.0.0 · 60 fps (30 in battle on Switch)</sub> |
+| ![Blasphemous 2](docs/images/blasphemous-2.jpg)<br>Blasphemous 2<br><sub>update 1.0.8 · 60 fps</sub> | ![Captain Toad: Treasure Tracker](docs/images/captain-toad-treasure-tracker.jpg)<br>Captain Toad: Treasure Tracker<br><sub>update 1.4.2 · 60 fps</sub> |
+| ![Castlevania: Belmont's Curse](docs/images/castlevania-belmonts-curse.jpg)<br>Castlevania: Belmont's Curse<br><sub>update 1.1.0 · 60 fps</sub> | ![Celeste](docs/images/celeste.jpg)<br>Celeste<br><sub>update 1.4.1.1 · 60 fps</sub> |
+| ![Donkey Kong Country Returns HD](docs/images/donkey-kong-country-returns-hd.jpg)<br>Donkey Kong Country Returns HD<br><sub>update 1.1.0 · 60 fps</sub> | ![Graveyard Keeper 2](docs/images/graveyard-keeper-2.jpg)<br>Graveyard Keeper 2<br><sub>update 1.0.4 · 60 fps (30 on Switch)</sub> |
+| ![Hades II](docs/images/hades-ii.jpg)<br>Hades II<br><sub>update 1.0 · 60 fps</sub> | ![Hollow Knight: Silksong](docs/images/hollow-knight-silksong.jpg)<br>Hollow Knight: Silksong<br><sub>update 1.0.30000 · 60 fps</sub> |
+| ![Mario vs. Donkey Kong](docs/images/mario-vs-donkey-kong.jpg)<br>Mario vs. Donkey Kong<br><sub>update 1.0.1 · 60 fps</sub> | ![Metroid Dread](docs/images/metroid-dread.jpg)<br>Metroid Dread<br><sub>update 2.1.0 · 60 fps</sub> |
+| ![NEO: The World Ends with You](docs/images/neo-the-world-ends-with-you.jpg)<br>NEO: The World Ends with You<br><sub>update 1.03</sub> | ![Paper Mario: The Origami King](docs/images/paper-mario-the-origami-king.jpg)<br>Paper Mario: The Origami King<br><sub>update 1.0.1 · 60 fps (30 on Switch)</sub> |
+| ![Pokémon Legends: Arceus](docs/images/pokemon-legends-arceus.jpg)<br>Pokémon Legends: Arceus<br><sub>update 1.1.1 · 60 fps (30 on Switch)</sub> | ![Super Mario Bros. Wonder](docs/images/super-mario-bros-wonder.jpg)<br>Super Mario Bros. Wonder<br><sub>update 1.2.1 · 60 fps, dips to 40</sub> |
+| ![Super Mario Odyssey](docs/images/super-mario-odyssey.jpg)<br>Super Mario Odyssey<br><sub>update 1.4.1 · 60 fps · shake the device to throw Cappy</sub> | ![Tales of Eternia Remastered](docs/images/tales-of-eternia-remastered.jpg)<br>Tales of Eternia Remastered<br><sub>update 2.0.0 · 60 fps</sub> |
+| ![Unicorn Overlord](docs/images/unicorn-overlord.jpg)<br>Unicorn Overlord<br><sub>update 1.05 · 60 fps · **boots**: saving and a full battle not tested yet</sub> | ![Unpacking](docs/images/unpacking.jpg)<br>Unpacking<br><sub>update 2.01 · 60 fps · played by touch</sub> |
+| ![Viractal: Will You Trust Your Party?](docs/images/viractal.jpg)<br>Viractal: Will You Trust Your Party?<br><sub>update 1.4.5</sub> | ![Xenoblade Chronicles 3](docs/images/xenoblade-chronicles-3.jpg)<br>Xenoblade Chronicles 3<br><sub>update 2.2.0 · 30 fps · **work in progress**: some effects and models don't draw yet</sub> |
+
+A game that is not in this table is not supported yet. Which games each release has been checked to port: [docs/RELEASE_CHECK.md](docs/RELEASE_CHECK.md). The games we look at next, and the ones done: [docs/PORT_CHECKLIST.md](docs/PORT_CHECKLIST.md).
 
 ## For players: port a game without programming
 
@@ -17,98 +33,9 @@ Each game is a profile in `nxnative/dm/games/<title ID>/` with an `android.tsv`.
 
 The step-by-step guide is [packaging/INSTALL.md](packaging/INSTALL.md). You need your own game files and `prod.keys`, dumped from your own Switch; the tool never ships or downloads either. NSZ and XCZ files are decompressed during the port (into the build folder's `tmp/`, deleted once extracted).
 
-## Setup from the repository
+## For developers
 
-Install [Python](https://www.python.org) 3.11 or later and `python -m pip install -r requirements.txt`, then `python -m porter tools --download` (or install them yourself):
-- [Android NDK r27c](https://developer.android.com/ndk/downloads) (only the NDK: no Android Studio, SDK or JDK)
-- [.NET SDK 10](https://dotnet.microsoft.com/download)
-- Android [platform-tools](https://developer.android.com/tools/releases/platform-tools) (adb), to install from the tool
-- your own `prod.keys`, dumped from your Switch
-
-## Port a game
-
-The app:
-
-```
-python -m gui
-```
-
-Check the **Setup** tab, choose the game's folder (the base game NSP, XCI, NSZ or XCZ, its update and DLC) on the **Port** tab, and click **Port**.
-
-Or the command line:
-
-```
-python -m porter doctor
-python -m porter port "D:\Games\NEO" -k "D:\keys\prod.keys" --install
-```
-
-The APK (`NeoTheWorldEndsWithYou.apk`) and the data pack (`NeoTheWorldEndsWithYou-data/`) appear in the game folder (`-o` picks another). The first port takes a while (extraction, rewriting the game's code, translating its shaders); later ones reuse what has not changed. `python -m porter -h` lists the commands.
-
-## Layout
-
-- `porter/`: the port pipeline (`python -m porter`).
-- `gui/`: the desktop app (`python -m gui`).
-- `nxnative/`: nxnative, kept as a git subtree of `seedds/nxnative` (squashed), with the Android runtime in `nxnative/dm/android/` and the game profiles in `nxnative/dm/games/`.
-- `packaging/`: the player's bundle (`python packaging/build_bundle.py`).
-- `devtools/`: scripts for bringing up a game on a connected device (`devtools/device.json` names the device: `{"serial": "...", "package": "..."}`).
-- `probes/`, `RESEARCH.md`: the feasibility study and the first on-device probes.
-- `.githooks/`: the commit-msg hook (see Commit messages).
-
-## Building the bundle
-
-```
-python -m pip install -r requirements.txt pyinstaller
-python packaging/build_bootloader.py
-python packaging/build_bundle.py
-```
-
-`build_bootloader.py` compiles PyInstaller's launcher on this PC (it needs the Microsoft C++ Build Tools), because a few antivirus engines flag the prebuilt one every PyInstaller app shares. Run it again after installing or upgrading PyInstaller.
-
-`dist/nx2android/` and `dist/nx2android-<version>.zip`: the app, the committed `nxnative/` and the install guide; no toolchains, keys or game files.
-
-## Tests
-
-```
-python -m unittest discover tests
-```
-
-## Commit messages
-
-[Conventional Commits 1.0.0](https://www.conventionalcommits.org/en/v1.0.0/), with commitlint's `config-conventional` types and limits:
-
-```
-<type>[(<scope>)][!]: <description>
-
-[body, after one blank line]
-
-[footers: Co-Authored-By: …, BREAKING CHANGE: <what breaks>]
-```
-
-- type: `feat`, `fix`, `perf`, `refactor`, `docs`, `test`, `build`, `ci`, `chore`, `style` or `revert`, lower case.
-- scope: optional and free, the part touched: `vk`, `android`, `porter`, `gui`, `profile`, `status`, `release`…
-- description: no full stop at the end; it may start with a capital (game and API names). Header, body and footer lines at most 100 characters (a lone URL may run longer).
-- `!` before the `:` or a `BREAKING CHANGE:` footer marks a breaking change.
-
-```
-fix(vk): a transfer read where a run of rasterizer-discard draws ends (XC3 grass flicker)
-feat(profile): Tales of Eternia Remastered playable on update 2.0.0 (v65536)
-docs(status): bundle 8372959 ported Tales of Eternia Remastered from scratch
-chore(release): version 0.1.1
-```
-
-`.githooks/commit-msg` refuses other messages (merges, reverts and `fixup!` commits from git pass). Turn it on once per clone:
-
-```
-git config core.hooksPath .githooks
-```
-
-The commits before 2026-10-28 predate the rule.
-
-## Updating nxnative
-
-```
-git subtree pull --prefix nxnative https://github.com/seedds/nxnative.git main --squash
-```
+Running from the repository, the command line, the repository layout, building the bundle, tests and commit messages: [docs/DEVELOPMENT_GUIDE.md](docs/DEVELOPMENT_GUIDE.md). How it is put together: [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md).
 
 ## Keys and game files
 

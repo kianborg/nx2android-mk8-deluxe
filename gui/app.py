@@ -9,7 +9,7 @@ from pathlib import Path
 from PySide6.QtCore import Qt, QTimer, QUrl
 from PySide6.QtGui import QColor, QDesktopServices, QFont
 from PySide6.QtWidgets import (QApplication, QCheckBox, QComboBox, QFileDialog, QFormLayout, QFrame, QGridLayout, QGroupBox, QHBoxLayout, QHeaderView, QLabel, QLineEdit,
-                               QMainWindow, QMessageBox, QPlainTextEdit, QProgressBar, QPushButton, QSplitter, QTableWidget, QTableWidgetItem, QTabWidget,
+                               QMainWindow, QMessageBox, QPlainTextEdit, QProgressBar, QPushButton, QSpinBox, QSplitter, QTableWidget, QTableWidgetItem, QTabWidget,
                                QTreeWidget, QTreeWidgetItem, QVBoxLayout, QWidget)
 
 from porter import config
@@ -62,11 +62,21 @@ class PortTab(QWidget):
         self.device = QComboBox(); self.device.setMinimumWidth(260)
         refresh = QPushButton('Refresh'); refresh.clicked.connect(self.refresh_devices)
         dev = QWidget(); dh = QHBoxLayout(dev); dh.setContentsMargins(0, 0, 0, 0); dh.addWidget(self.install); dh.addWidget(self.device, 1); dh.addWidget(refresh)
+        self.replace_signer = QCheckBox('Replace an app of the same package signed with another key (uninstalls it first: its saves are deleted)')
+        self.package = QLineEdit(); self.package.setPlaceholderText('the profile\'s package')   # porter port --package: a test install beside the player's other build
+        self.package.setToolTip('Install under another package than the profile\'s (org.nx2a.<game>.test), beside your other build of the game.\n'
+                                'An app of another package has its own saves.')
+        self.fps60 = QCheckBox('60 fps (the profile\'s own frame-rate cap, else the community\'s FPSLocker-Warehouse config of the game\'s build, fetched from GitHub)')
         self.debug = QCheckBox('Development build (debuggable, debug information, DM_CTL key presses)')
         self.experimental = QCheckBox('Experimental: try a game that is not ported to Android yet (it may not start)')
         self.experimental.toggled.connect(lambda _: self.update_port_button())
+        self.vercode = QSpinBox(); self.vercode.setRange(0, 65535); self.vercode.setSpecialValueText('none'); self.vercode.setMaximumWidth(120)   # porter port --vercode-offset (0: none, or $NX2A_VERCODE_OFFSET)
+        self.vercode.setToolTip('Added to the APK\'s versionCode. Android does not install an APK over one with a higher versionCode;\n'
+                                'raise this to install a rebuild of the same game version over an earlier rebuild that had an offset, and keep its saves.')
         f.addRow('App name', self.app_name); f.addRow('Game language', self.language)
-        f.addRow('Output folder', path_row(self.out, self.pick_out)); f.addRow('Device', dev); f.addRow('', self.debug); f.addRow('', self.experimental)
+        f.addRow('Output folder', path_row(self.out, self.pick_out)); f.addRow('Device', dev); f.addRow('', self.replace_signer)
+        f.addRow('Package', self.package); f.addRow('versionCode offset', self.vercode)
+        f.addRow('', self.fps60); f.addRow('', self.debug); f.addRow('', self.experimental)
         v.addWidget(o)
 
         bar = QHBoxLayout()
@@ -125,6 +135,7 @@ class PortTab(QWidget):
         if info.get('reason'): rows.append(f'<span style="color:{"#ef6c00" if info["supported"] else "#c62828"}">{info["reason"]}</span>')
         self.card.setText('<br>'.join(rows))
         self.app_name.setPlaceholderText(info.get('name') or 'the game\'s name')
+        self.package.setPlaceholderText(a.get('package') or 'the profile\'s package')
         self.update_port_button()
 
     def update_port_button(self):   # a supported game, or any game with Experimental ticked
@@ -154,6 +165,10 @@ class PortTab(QWidget):
         if self.install.isChecked():
             args.append('--install')
             if self.device.currentData(): args += ['--device', self.device.currentData()]
+            if self.replace_signer.isChecked(): args.append('--replace-signer')
+        if self.package.text().strip(): args += ['--package', self.package.text().strip()]
+        if self.vercode.value(): args += ['--vercode-offset', str(self.vercode.value())]
+        if self.fps60.isChecked(): args.append('--fps60')
         if self.debug.isChecked(): args.append('--debug')
         if self.experimental.isChecked() and not self.info.get('supported'): args.append('--experimental')
         self.run(args)
@@ -162,6 +177,7 @@ class PortTab(QWidget):
         if not self.result: return
         args = ['install', self.result['data'], '--apk', self.result['apk'], '--progress', 'json']
         if self.device.currentData(): args += ['--device', self.device.currentData()]
+        if self.replace_signer.isChecked(): args.append('--replace-signer')
         self.run(args)
 
     def run(self, args):

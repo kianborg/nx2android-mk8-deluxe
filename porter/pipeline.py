@@ -33,6 +33,7 @@ class Options:
     experimental: bool = False         # a game not ported to Android yet: a provisional profile from upstream's survey (or a copy of its iOS profile), status experimental
     package: str = ''                  # the app's package instead of the profile's (a test install beside another build of the game)
     fps60: bool = False                # 60 fps: the profile's own frame-rate cap, else the build's FPSLocker-Warehouse config (porter/fpslocker.py)
+    vercode_offset: int = 0            # added to the APK's versionCode: a rebuild of the same game version installs over a build with a higher one (version_code)
     jobs: int = field(default_factory=lambda: os.cpu_count() or 8)
 
 
@@ -41,13 +42,21 @@ def app_stem(g, name):   # the file name of the APK and the data pack: the profi
     return ipa[:-4] if ipa.endswith('.ipa') else ipa
 
 
-def version_code(ver):   # the APK's versionCode: the Switch version number (v196608 → 196609), so an update of the game installs over the base game's port
-    return nsp.vnum(ver) + 1
+VERCODE_OFFSET_MAX = 65535   # Switch versions are 65536 apart (v65536, v131072): a rebuild of one, offset by this much at most, stays below the next one's port
 
 
-def inspect(folder):
-    """What a game folder holds, without extracting anything: the GUI's game card and `porter inspect`"""
-    app, fam = nsp.scan_nsps(Path(folder), dumps.EXTS)
+def version_code(ver, offset=0):
+    """The APK's versionCode: the Switch version number (v196608 → 196609), so an update of the game installs over the base game's port. Android installs an APK over one
+    with the same versionCode, never over a higher one (INSTALL_FAILED_VERSION_DOWNGRADE): offset (porter port --vercode-offset) lifts a rebuild above a build already on
+    the device (an earlier rebuild with an offset, a port of a later version) and keeps its saves, where an uninstall deletes them"""
+    if not 0 <= offset <= VERCODE_OFFSET_MAX: raise BuildError(f'the versionCode offset must be 0 to {VERCODE_OFFSET_MAX} (the next game version\'s port must stay above it): {offset}')
+    return nsp.vnum(ver) + 1 + offset
+
+
+def inspect(folder, keys=None):
+    """What a game folder holds, without extracting anything: the GUI's game card and `porter inspect`. keys: prod.keys (default: the configured one), which reads the title ID
+    of a dump with neither a ticket nor a [title ID] tag (an untagged cartridge dump) from its NCA headers"""
+    app, fam = nsp.scan_nsps(Path(folder), dumps.EXTS, keys or config.load().get('keys'))
     g, ap = profiles.by_title(app)
     files = [fam['base'], *(p for _, p in fam['updates']), *(p for _, _, p in fam['dlc'])]
     info = dict(title_id=f'{app:016X}', base=fam['base'].name, updates=[{'version': f'v{v}' if v is not None else None, 'file': p.name} for v, p in fam['updates']],
@@ -66,7 +75,7 @@ def inspect(folder):
         info['reason'] = f'{g.get("name", g.id)} has a game profile (iOS) but is not ported to Android yet (an experimental port tries it with that profile)'
         return info
     info.update(android=profiles.entry(g, ap).as_dict(), supported=True)
-    if ap.status == 'wip': info['reason'] = f'{g.get("name", g.id)} is a work in progress: it plays, but parts of it are missing (docs/PORT_STATUS.md says which)'
+    if ap.status == 'wip': info['reason'] = f'{g.get("name", g.id)} is a work in progress: it plays, but parts of it are missing (the Games table in README.md says which)'
     if pack not in builds:
         info['reason'] = (info['reason'] + '; ' if info['reason'] else '') + f'{pack} is not a version the profile was brought up on ({", ".join(builds)}): it is packed from a derived profile, without that version\'s fixes'
     return info
@@ -84,6 +93,7 @@ class Port:
         o = self.o
         o.folder = Path(o.folder).expanduser().resolve()
         if not o.folder.is_dir(): raise BuildError(f'not a folder: {o.folder}')
+        version_code('v0', o.vercode_offset)   # an offset out of range fails now, not after the shaders
         keys = o.keys or self.cfg.get('keys')
         if not keys: raise BuildError('no prod.keys: give -k / --keys, or set it once with `porter config keys <path>`')
         o.keys = Path(keys).expanduser().resolve()
@@ -121,7 +131,7 @@ class Port:
     def inputs(self):
         o = self.o
         say(f'game folder: {o.folder}')
-        self.app, self.fam = nsp.scan_nsps(o.folder, dumps.EXTS)
+        self.app, self.fam = nsp.scan_nsps(o.folder, dumps.EXTS, o.keys)
         tid = f'{self.app:016X}'
         self.work = o.folder / f'{tid}_build'
         g, ap = profiles.by_title(self.app)
@@ -270,8 +280,75 @@ class Port:
         src = profile_guess.build_sources(self.game / 'ExeFS', self.game / 'RomFS', self.g.words('modules'))
         gfx = src['graphics'][0]
         if gfx != 'nvn': raise BuildError(f'{self.app_name} renders with {gfx} ({src["graphics"][1]}): the Android host replays NVN only so far')
-        for k in ('glslc_capture', 'ue_decode', 'oodle_packs', 'ue_legacy'):
+        # Game Freak's GFPAKs with Oodle entries: decoded by the game's own decoder on the Android device (device_oodle); Trinity and PKZ packs still need the Mac host
+        self.oodle_why = src['oodle_packs'][1] if src['oodle_packs'][0] and 'GFPAK' in src['oodle_packs'][1] else ''
+        if self.oodle_why:
+            try: Adb(self.tools['adb'], self.o.device or self.cfg.get('device'), log=say).pick()
+            except (AdbError, KeyError) as e: raise BuildError(f"{self.app_name}'s shaders are in Oodle-compressed archives ({self.oodle_why}): the port decodes them with the game's own decoder on "
+                                                               f'the Android device, so connect it (adb) and port again ({e})') from e
+        for k in ('glslc_capture', 'ue_decode', 'ue_legacy') + (() if self.oodle_why else ('oodle_packs',)):
             if src[k][0]: raise BuildError(f'{self.app_name} needs a step that boots the game in the Mac host ({src[k][1]}), which a Windows port cannot run yet')
+
+    # ---- the game's own Oodle decoder on the device, for the shader split (Pokémon Legends: Arceus's GFPAKs) ----
+    ODEV = '/data/local/tmp/nx2a-oodle'   # dmhost, the rewritten modules and the job, removed afterwards
+    def device_oodle(self):
+        """The Mac host's Oodle tool mode runs in the Android host as well (dm/host/hle_oodle.c DM_OODLE_JOB): the host built as an executable (build.py --exe) runs on the device
+        with the rewritten modules and decodes with the game's own OodleLZ_Decompress, the same ARM64 code the Switch runs. Every Oodle entry of the GFPAKs goes in one job file
+        (1.6 GB for Pokémon Legends: Arceus), pushed and decoded there in one run; only the entries that hold a BNSH shader come back (DM_OODLE_JOB_BNSH), written as the split's
+        decoded folder (shader_split.py gfpak_decoded). Streaming the entries through an adb forward instead reset the connection whenever both directions were busy.
+        → the split's environment"""
+        import struct
+        adb = self.oodle_adb = Adb(self.tools['adb'], self.o.device or self.cfg.get('device'), log=say); adb.pick()
+        out = self.aw / ('host-debug' if self.o.debug else 'host')   # the host stage's own folder: its objects serve both
+        PROG.set(step="building the host as a tool for the game's Oodle decoder")
+        nsp.run([PY, DM / 'android/build.py', '--game', self.g.id, '--ndk', self.tools['ndk'], '--out', out, '--exe', '--jobs', str(self.o.jobs)] + ([] if self.o.debug else ['--release']),
+                self.logs / 'android_oodle_host.log', env=self.env)
+        PROG.set(step="the game's Oodle entries in a job file")
+        tmp = self.work / 'tmp/oodle'; nsp.rmtree(tmp); tmp.mkdir(parents=True)
+        recs, job = [], tmp / 'job.bin'   # recs: (label, archive size, entry index) of each record, in order
+        with open(job, 'wb') as jf:
+            jf.write(b'DMOJ' + struct.pack('<I', 0))
+            for v in self.versions:
+                rom = self.dirs[v] / 'RomFS'
+                for p in sorted(rom.rglob('*.gfpak')):
+                    d = p.read_bytes()
+                    if d[:8] != b'GFLXPACK': continue
+                    n, _, fo = struct.unpack_from('<IIQ', d, 0x10); label = '/' + p.relative_to(rom).as_posix()
+                    for i in range(n):
+                        ct, usz, csz, off = struct.unpack_from('<2xHII4xQ', d, fo + 0x18 * i)
+                        if ct == 3: jf.write(struct.pack('<II', csz, usz) + d[off:off + csz]); recs.append((label, len(d), i))
+            jf.seek(4); jf.write(struct.pack('<I', len(recs)))
+        PROG.set(step=f"the game's Oodle decoder on the device: {len(recs):,} entries, {job.stat().st_size / 2**30:.1f} GB")
+        adb.shell(f'rm -rf {self.ODEV}; mkdir -p {self.ODEV}/mods', check=False)
+        adb.push_file(out / 'dmhost', f'{self.ODEV}/dmhost'); adb.push_tree(self.patched, f'{self.ODEV}/mods'); adb.push_file(job, f'{self.ODEV}/job.bin')
+        nsp.rmtree(job)
+        r = adb.shell(f'chmod 755 {self.ODEV}/dmhost; cd {self.ODEV} && DM_OODLE_JOB={self.ODEV}/job.bin DM_OODLE_JOB_BNSH=1 ./dmhost mods > job.log 2>&1; echo "exit $?"; '
+                      f'grep -a -e DM_OODLE_JOB -e RED job.log | tail -5', timeout=3600)
+        (self.logs / 'android_oodle_job.log').write_text(r, encoding='utf-8')
+        if 'exit 0' not in r: raise BuildError(f"the game's Oodle decoder on the device failed (see {self.logs / 'android_oodle_job.log'})")
+        adb.run('pull', f'{self.ODEV}/job.bin.out', str(tmp / 'job.out'), timeout=1800)
+        b = (tmp / 'job.out').read_bytes(); nsp.rmtree(tmp / 'job.out')
+        if b[:4] != b'DMOR' or struct.unpack_from('<I', b, 4)[0] != len(recs): raise BuildError("the game's Oodle decoder on the device answered for other entries than it was given")
+        by, o = {}, 8   # label → (size, {index: bytes})
+        for label, size, i in recs:
+            n = struct.unpack_from('<I', b, o)[0]; o += 4
+            ent = by.setdefault(label, (size, {}))[1]
+            if n == 0xffffffff: continue
+            if n == 0: raise BuildError(f"the game's Oodle decoder on the device failed on {label} entry {i}")
+            ent[i] = b[o:o + n]; o += n
+        dec = tmp / 'decoded'; dec.mkdir()
+        for label, (size, ent) in by.items():
+            body = b''.join(struct.pack('<II', i, len(x)) + x for i, x in sorted(ent.items()))
+            (dec / (label.lstrip('/').replace('/', '__') + '.dec')).write_bytes(b'DGFD' + struct.pack('<QI', size, len(ent)) + body)
+        say(f"shaders in Oodle-compressed archives ({self.oodle_why}): {len(recs):,} entries decoded by the game's own decoder on the device, "
+            f"{sum(len(e) for _, e in by.values()):,} of them hold shaders")
+        return {'DM_GFPAK_DECODED': str(dec)}
+    def device_oodle_end(self):
+        adb = getattr(self, 'oodle_adb', None)
+        if not adb: return
+        self.oodle_adb = None
+        try: adb.shell(f'rm -rf {self.ODEV}', check=False)
+        except AdbError as e: say(f'the Oodle decoder left on the device ({e}): {self.ODEV}')
 
     # ---- 60 fps (--fps60): the profile's own cap (fps_target: frame-step stubs or hle_fpslock.c's rows), else the community's FPSLocker config of the build ----
     def fps_unlock(self):
@@ -317,8 +394,10 @@ class Port:
     def shaders(self):
         sv = self.versions
         pkg = self.work / 'shader' / 'pkg'
-        nsp.split_shaders(PY, NXNATIVE, [self.dirs[v] / 'RomFS' for v in sv], [self.dirs[v] / 'ExeFS/main' for v in sv], pkg, self.env, self.logs, self.g, bool(self.derived or self.provisional),
-                         aoc=self.aoc)   # DLC with shaders of its own (Xenoblade Chronicles 3's archives)
+        try: nsp.split_shaders(PY, NXNATIVE, [self.dirs[v] / 'RomFS' for v in sv], [self.dirs[v] / 'ExeFS/main' for v in sv], pkg, self.env, self.logs, self.g, bool(self.derived or self.provisional),
+                               oodle=self.device_oodle if self.oodle_why else None,   # Oodle-compressed archives: the game's own decoder on the device
+                               aoc=self.aoc)   # DLC with shaders of its own (Xenoblade Chronicles 3's archives)
+        finally: self.device_oodle_end()
         self.dmsv = self.aw / 'shaders.dmsv'; kf = self.aw / 'shaders.dmsv.key'; cap = self.aw / 'captured_shaders'
         PROG.stage('Vulkan shaders', step='building the translator')
         xlate, xkey = self.translator()
@@ -384,8 +463,10 @@ class Port:
         stem = app_stem(self.g, self.app_name)
         self.apk_path = self.o.out / f'{stem}.apk'; self.o.out.mkdir(parents=True, exist_ok=True)
         icon = self.icon()
+        code = version_code(self.pkg_ver, self.o.vercode_offset)
+        if self.o.vercode_offset: say(f'versionCode {code} ({self.pkg_ver} + 1 + offset {self.o.vercode_offset})')
         nsp.run([PY, DM / 'android/apk/mkapk.py', self.so, self.apk_path, paths.signing_key(), '--package', self.package, '--label', self.app_name, '--lib', 'dmhost',
-                 '--version-code', str(version_code(self.pkg_ver)), '--version-name', self.display]
+                 '--version-code', str(code), '--version-name', self.display]
                 + (['--landscape'] if self.ap.landscape else []) + (['--icon', icon] if icon else []) + self.theme() + ([] if self.o.debug else ['--release']),
                 self.logs / 'android_apk.log', env=self.env)
         self.result['apk'] = str(self.apk_path)

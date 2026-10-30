@@ -36,7 +36,7 @@ A profile is offered for Android when it has an `android.tsv`; the profiles with
 
 | Key | Meaning |
 |---|---|
-| `status` | `playable` (tested end to end on a device), `wip` (plays on a device, but parts are missing: docs/PORT_STATUS.md says which), `boots` (starts, not playable yet) or `experimental` |
+| `status` | `playable` (tested end to end on a device), `wip` (plays on a device, but parts are missing: README.md's Games table says which), `boots` (starts, not playable yet) or `experimental` |
 | `tested` | `<version> <device>`: the version and device the status was checked on |
 | `package` | The app's package name (default `org.nx2a.t<title ID in lowercase>`) |
 | `orientation` | `landscape` (default) or `any` |
@@ -77,6 +77,8 @@ What the port refuses: a game whose `main` renders with Vulkan or OpenGL (the An
 **Experimental ports** (`--experimental`, the GUI's Experimental box): a game without an Android profile. With no profile at all, upstream's survey (`<game folder>/<title ID>_survey/survey.md`) guesses a provisional one; with only an iOS profile, that profile is copied. Either way it goes to `<title ID>_build/profile/<title ID>/` with an `android.tsv` of status `experimental`, and every tool finds it there (`DM_GAMES_DIR`). That folder is where a bring-up starts; a game that works gets its profile into `nxnative/dm/games/`.
 
 `--package` installs a port under another package than the profile's, beside the player's other build of the game (a test).
+
+**versionCode.** The APK's versionCode is the packed Switch version number + 1 (v196608 → 196609), so a port of a game update installs over the base game's port. Android installs an APK over one with the same versionCode, but never over a higher one (`INSTALL_FAILED_VERSION_DOWNGRADE`); the only other way past that is an uninstall, which deletes the saves. `--vercode-offset N` (or `NX2A_VERCODE_OFFSET`) adds N, 0 to 65535, so a rebuild of the same version installs over an earlier rebuild with an offset; 65535 at most keeps it below the next version's port, as Switch versions are 65536 apart. A refused downgrade names the installed versionCode.
 
 **60 fps** (`--fps60`). A Switch game capped at 30 needs per-build knowledge to run at 60: which memory holds its frame limit, or which code counts frames. A profile that has it (`fps_target`: the rewriter's frame-step stubs or `hle_fpslock.c`'s rows) gets `DM_FPS_TARGET=60` in `env.txt`. Otherwise the port fetches the community's config for the packed `main` build from masagrator's FPSLocker-Warehouse (`porter/fpslocker.py`; GitHub, `SaltySD/plugins/FPSLocker/patches/<title ID>/<build ID>.yaml`) and converts it: the `ALL_FPS` memory writes (pointer chains from `main`, compares; the expressions evaluated for 30 and 60) become `fpslock.tsv` in the data pack, which `hle_fpslock.c` writes on every present (`DM_FPS_LOCKS`); `MASTER_WRITE` bytes become cuts for the rewriter (`patch_nso.py` `DM_PATCHES_EXTRA`, original bytes from the game's `main`); presents follow the display (`DM_PRESENT_INTERVAL=display`), as FPSLocker paces them itself. A config using what the host lacks (`asm_a64`, `DECLARATIONS`, non-`MAIN` regions, `refresh_rate`) is refused whole, and the game keeps its own frame rate; 1,160 of the 1,462 configs convert (2026-10-28). The warehouse has no license, so its configs are fetched per port and never committed. Whether 60 holds on a device, and whether the config fixes every speed issue, is the config's and the device's: it is the player's choice.
 
@@ -133,7 +135,7 @@ nx2android/
   RESEARCH.md            feasibility study
 ```
 
-Updating the engine from upstream: `git subtree pull --prefix nxnative https://github.com/seedds/nxnative.git main --squash`.
+The engine is our own fork since 2026-10-29: no subtree pull from upstream ([DEVELOPMENT_GUIDE.md](DEVELOPMENT_GUIDE.md#nxnative)).
 
 ## Adding a game
 

@@ -1,6 +1,6 @@
 # Release check
 
-Which games the player's bundle has been checked to port, from the game files to an APK and a data pack, on a Windows PC with nothing from the developer's machine: the bundle unzipped into an empty folder, its own player folder, the tools from its **Download missing tools**, and a game folder holding only the game's NSP files. Which games play is in [PORT_STATUS.md](PORT_STATUS.md).
+Which games the player's bundle has been checked to port, from the game files to an APK and a data pack, on a Windows PC with nothing from the developer's machine: the bundle unzipped into an empty folder, its own player folder, the tools from its **Download missing tools**, and a game folder holding only the game's NSP files. Which games play is in the README's [Games](../README.md#games).
 
 A release ships when every row of the results below has been ported by the bundle it ships.
 
