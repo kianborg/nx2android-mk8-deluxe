@@ -98,6 +98,8 @@ Compressed buffer-to-texture copies use an ordered GPU readback before CPU decod
 
 Decoded textures may occupy substantially more GPU memory than their compressed originals; memory statistics use the actual Vulkan allocation size. No shader rebuild is needed for this change, but porting again rebuilds the host and refreshes the APK and data-pack capability metadata. Phone rendering and performance require device validation.
 
+For black-screen diagnosis, `DM_VK_TRACE_AT=120` delays `DM_VK_TRACE_FRAME` until present 120. Use `DM_VK_TRACE_FRAME=*` to trace all passes of the next submission, or a size such as `1920x1080` to filter. A filtered request is consumed only after a matching pass. Combine with `DM_VK_PASSDUMP=120` and `DM_VK_SHOT=120,300` for image captures. Pass numbers vary during startup; a fixed `DM_VK_TRACE_PASS` can otherwise capture an unrelated cube-map or loading pass. Rejected decoded-BC views log dimensions, source/view formats, attachment use and storage identity (first eight occurrences).
+
 ## What the player installs
 
 The player gets the bundle (`dist/nx2android-<version>.zip` from `python packaging/build_bundle.py`): unzip, start `nx2android.exe`, nothing to install with pip. It does not ship toolchains; the Setup tab (`nx2android.exe -m porter doctor`, or `python -m porter doctor` from the repository) checks them and the free disk space, and its **Download missing tools** button (`porter tools --download`, `porter/fetch.py`) fetches the missing NDK, .NET SDK and platform-tools from Google's SDK repository and Microsoft's release list, checks each archive against the checksum its list gives, and unpacks them into the player's nx2android folder (`toolchains/`), which the finders search:

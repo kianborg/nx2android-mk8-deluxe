@@ -441,7 +441,12 @@ VkImageView vk_tex_view(const tex_t *t, const view_t *vw, int dim, int arrayed, 
     const vkfmt_t *f = vk_fmt(vw && vw->set_format ? vw->format : t->d.format); if (!f) f = vk_fmt(t->d.format);
     const vkfmt_t *base = vk_fmt(im->nvn_format);
     if (base->bc_decode && (as_attachment || !f->bc_decode || f->bpb != base->bpb || nvn_bc_pixel_size(vw && vw->set_format ? vw->format : t->d.format) != nvn_bc_pixel_size(im->nvn_format))) {
-        VKRED_ONCE(94, "decoded BC textures do not support render targets or raw-block views"); return VK_NULL_HANDLE;
+        static unsigned reported;
+        if (reported++ < 8) VKLOG("[RED] decoded BC view rejected: present %llu, serial %llu, %ux%ux%u, base NVN %#x (vk %d), view NVN %#x (vk %d, explicit %d), attachment %d, pool %p+%#llx; decoded BC textures do not support render targets or raw-block views",
+            (unsigned long long)g_tex_frame, (unsigned long long)t->serial, im->w, im->h, im->d,
+            im->nvn_format, im->fmt, vw && vw->set_format ? vw->format : t->d.format, f->vk, vw ? vw->set_format : 0,
+            as_attachment, (const void *)t->pool, (unsigned long long)t->off);
+        return VK_NULL_HANDLE;
     }
     uint32_t lv0 = vw && vw->set_levels ? vw->base_level : 0, nlv = vw && vw->set_levels ? vw->nlevels : im->levels - lv0;
     if (lv0 >= im->levels) lv0 = im->levels - 1; if (!nlv || lv0 + nlv > im->levels) nlv = im->levels - lv0;
