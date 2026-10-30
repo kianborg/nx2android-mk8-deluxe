@@ -7,6 +7,7 @@
 #include "gfx_vk.h"
 #include "nvn_tex.h"
 #include "../gfx/tex/nvn_deswizzle.h"
+#include "../gfx/tex/nvn_bc.h"
 #include "nvn_hmap.h"
 #include <string.h>
 
@@ -79,8 +80,15 @@ const vkfmt_t *vk_fmt(int f) {
             o->compressed = o->bw > 1 || o->bh > 1;
             o->is_int = e.kind == K_INT || e.kind == K_SINT; o->is_sint = e.kind == K_SINT; o->kind = 1;
             o->swz = (VkComponentMapping){VK_COMPONENT_SWIZZLE_IDENTITY, VK_COMPONENT_SWIZZLE_IDENTITY, VK_COMPONENT_SWIZZLE_IDENTITY, e.noalpha ? VK_COMPONENT_SWIZZLE_ONE : VK_COMPONENT_SWIZZLE_IDENTITY};
-            if ((o->compressed && o->vk >= VK_FORMAT_BC1_RGB_UNORM_BLOCK && o->vk <= VK_FORMAT_BC7_SRGB_BLOCK && !V.has_bc) ||
-                (o->vk >= VK_FORMAT_ASTC_4x4_UNORM_BLOCK && o->vk <= VK_FORMAT_ASTC_12x12_SRGB_BLOCK && !V.has_astc)) {
+            const char *force_bc = getenv("DM_VK_BC_DECODE");
+            if (f >= 0x41 && f <= 0x50 && (!V.has_bc || (force_bc && atoi(force_bc)))) {
+                o->bc_decode = 1; o->compressed = 0;
+                o->vk = f == 0x49 ? VK_FORMAT_R8_UNORM : f == 0x4a ? VK_FORMAT_R8_SNORM :
+                        f == 0x4b ? VK_FORMAT_R8G8_UNORM : f == 0x4c ? VK_FORMAT_R8G8_SNORM :
+                        f >= 0x4f ? VK_FORMAT_R16G16B16A16_SFLOAT :
+                        (f >= 0x45 && f <= 0x48) || f == 0x4e ? VK_FORMAT_R8G8B8A8_SRGB : VK_FORMAT_R8G8B8A8_UNORM;
+                VKLOG("BC texture format %#x: CPU decompression to VkFormat %d%s", f, o->vk, V.has_bc ? " (forced)" : " (device lacks BC)");
+            } else if (o->vk >= VK_FORMAT_ASTC_4x4_UNORM_BLOCK && o->vk <= VK_FORMAT_ASTC_12x12_SRGB_BLOCK && !V.has_astc) {
                 o->kind = 0;   // said once per format: these textures went missing with nothing in the log (Adreno 6xx drivers of 2021 have no BC)
                 VKLOG("[RED] texture format %#x (VkFormat %d) needs %s, which the device lacks: textures in it are not drawn", f, o->vk,
                       o->vk <= VK_FORMAT_BC7_SRGB_BLOCK ? "BC (textureCompressionBC)" : "ASTC (textureCompressionASTC_LDR)");
@@ -151,10 +159,12 @@ static vkimg_t *img_new(const tex_t *t, const vkfmt_t *f) {
         im->fixed_fmt = 1; im->fmt2 = fl[1]; ci.pNext = &fli;
         ci.flags &= ~(VkImageCreateFlags)VK_IMAGE_CREATE_EXTENDED_USAGE_BIT; if (!fl[1]) ci.flags &= ~(VkImageCreateFlags)VK_IMAGE_CREATE_MUTABLE_FORMAT_BIT;
     }
+    if (f->bc_decode) ci.usage &= ~(VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT | VK_IMAGE_USAGE_STORAGE_BIT);
     im->usage = ci.usage; im->cflags = ci.flags;
     VkResult r = vkCreateImage(V.dev, &ci, NULL, &im->img);
     if (r) { VKRED_ONCE(10, "vkCreateImage failed (%d): %ux%ux%u format %#x (vk %d) target %d levels %u layers %u samples %u", r, im->w, im->h, im->d, d->format, f->vk, d->target, im->levels, im->layers, im->samples); free(im); return NULL; }
     VkMemoryRequirements req; vkGetImageMemoryRequirements(V.dev, im->img, &req);
+    im->allocation_size = req.size;
     if ((ci.usage & (VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT | VK_IMAGE_USAGE_DEPTH_STENCIL_ATTACHMENT_BIT)) && im->w >= 256) { static int n; if (n++ < 16)   // UBWC check: a compressed target takes room for its metadata
         VKLOG("target %ux%u format %d%s: %llu bytes", im->w, im->h, f->vk, im->fixed_fmt ? " (format-listed)" : "", (unsigned long long)req.size); }
     VkDeviceSize moff;
@@ -197,11 +207,28 @@ static void pkg_upload_(vkimg_t *im, const tex_t *t, const vkfmt_t *f) {
         uint32_t w = im->w >> lv ? im->w >> lv : 1, h = im->h >> lv ? im->h >> lv : 1, z = im->d >> lv ? im->d >> lv : 1;
         uint32_t bx = (w + bw - 1) / bw, by = (h + bh - 1) / bh; size_t pitch = (size_t)bx * bpb, slab = pitch * by * z;
         for (unsigned ly = 0; ly < im->layers; ly++) {
-            VkBuffer sb; VkDeviceSize so; uint8_t *dst = vk_scratch(slab, 16, &sb, &so);
+            size_t decoded_pitch = (size_t)w * nvn_bc_pixel_size(t->d.format);
+            if (f->bc_decode && (decoded_pitch > SIZE_MAX / h || decoded_pitch * h > SIZE_MAX / z)) die("[vk] decoded BC texture too large");
+            size_t decoded_slab = f->bc_decode ? decoded_pitch * h * z : slab;
+            VkBuffer sb; VkDeviceSize so; uint8_t *dst = vk_scratch(decoded_slab, 16, &sb, &so);
+            uint8_t *blocks = f->bc_decode ? malloc(slab) : dst;
+            if (!blocks) die("[vk] BC upload allocation failed (%zu bytes)", slab);
             if (linear) {   // linear storage: rows of the texture's stride, one level, one layer
                 size_t stride = t->d.stride ? t->d.stride : pitch;
-                for (uint32_t y = 0; y < by * z; y++) memcpy(dst + y * pitch, t->mem + (size_t)y * stride, pitch);
-            } else if (nvn_deswizzle(&t->d, lv, ly, t->mem, dst, pitch)) { VKRED_ONCE(13, "deswizzle refused texture format %#x target %d", t->d.format, t->d.target); return; }
+                if (f->bc_decode && (im->levels != 1 || im->layers != 1 || stride < pitch ||
+                    stride > SIZE_MAX / (by * z) || t->L.size < stride * (by * z - 1) + pitch))
+                    die("[vk] invalid linear BC storage layout");
+                for (uint32_t y = 0; y < by * z; y++) memcpy(blocks + y * pitch, t->mem + (size_t)y * stride, pitch);
+            } else if (nvn_deswizzle(&t->d, lv, ly, t->mem, blocks, pitch)) {
+                if (f->bc_decode) free(blocks);
+                VKRED_ONCE(13, "deswizzle refused texture format %#x target %d", t->d.format, t->d.target); return;
+            }
+            if (f->bc_decode) {
+                int r = nvn_bc_decode(t->d.format, w, h, z, blocks, slab, pitch, pitch * by,
+                                      dst, decoded_slab, decoded_pitch, decoded_pitch * h);
+                free(blocks);
+                if (r) die("[vk] BC decode refused format %#x, level %u layer %u", t->d.format, lv, ly);
+            }
             VkBufferImageCopy r = {so, 0, 0, {im->aspect & VK_IMAGE_ASPECT_COLOR_BIT ? VK_IMAGE_ASPECT_COLOR_BIT : VK_IMAGE_ASPECT_DEPTH_BIT, lv, ly, 1}, {0, 0, 0}, {w, h, z}};
             vkCmdCopyBufferToImage(cb, sb, im->img, VK_IMAGE_LAYOUT_GENERAL, 1, &r);
         }
@@ -239,7 +266,7 @@ extern uint64_t g_tex_frame;   // presents so far, for the packaged textures' la
 // last EVICT_KEEP presents go (their memory now holds another texture; one drawn again is made and filled again). Called with g_img_mu held
 enum { EVICT_KEEP = 60 };
 static uint64_t g_img_n, g_img_bytes, g_img_evicted;   // live images and their bytes, images evicted so far (vk_tex_sweep's line)
-static void img_drop(vkimg_t *im) { vk_lrz_forget(im); if (im->lin_mem) nvn_dirty_release(im->lin_mem, im->lin_len); if (im->packaged && !im->pkg_released && im->pkg_mem) nvn_dirty_release(im->pkg_mem, im->pkg_len); g_img_n--; g_img_bytes -= im->size > 0 ? (uint64_t)im->size : 0; alias_unlink(im); vk_tex_view_drop_all(im); if (im->sub) vk_defer_free_image_sub(im->img, im->sub); else vk_defer_free_image(im->img, im->mem); free(im); }
+static void img_drop(vkimg_t *im) { vk_lrz_forget(im); if (im->lin_mem) nvn_dirty_release(im->lin_mem, im->lin_len); if (im->packaged && !im->pkg_released && im->pkg_mem) nvn_dirty_release(im->pkg_mem, im->pkg_len); g_img_n--; g_img_bytes -= im->allocation_size; alias_unlink(im); vk_tex_view_drop_all(im); if (im->sub) vk_defer_free_image_sub(im->img, im->sub); else vk_defer_free_image(im->img, im->mem); free(im); }
 static void evict_overlaps(uint64_t pool, int64_t off, int64_t size) {
     akey ks[64]; int n = 0;
     for (uint32_t i = 0; i < g_by_key.cap && n < 64; i++) {
@@ -266,7 +293,7 @@ vkimg_t *vk_tex(const tex_t *t) {
     if (!im) {
         if (keyed) evict_overlaps(k.pool, t->off, (int64_t)t->L.size);
         im = img_new(t, f); if (!im) { pthread_mutex_unlock(&g_img_mu); return NULL; }
-        im->pool = k.pool; im->off = t->off; im->size = (int64_t)t->L.size; im->flags = t->d.flags; g_img_n++; g_img_bytes += t->L.size;
+        im->pool = k.pool; im->off = t->off; im->size = (int64_t)t->L.size; im->flags = t->d.flags; g_img_n++; g_img_bytes += im->allocation_size;
         if (keyed) { alias_link(im); nvn_hm_put(&g_by_key, &k, im); } else nvn_hm_put(&g_by_serial, &t->serial, im);
         fresh = 1;
     }
@@ -412,6 +439,10 @@ VkImageView vk_tex_view(const tex_t *t, const view_t *vw, int dim, int arrayed, 
     vk_watch(im, as_attachment ? "attachment" : "sampled or image");
     if (!as_attachment) { void vk_texdump_note(vkimg_t *im); vk_texdump_note(im); }
     const vkfmt_t *f = vk_fmt(vw && vw->set_format ? vw->format : t->d.format); if (!f) f = vk_fmt(t->d.format);
+    const vkfmt_t *base = vk_fmt(im->nvn_format);
+    if (base->bc_decode && (as_attachment || !f->bc_decode || f->bpb != base->bpb || nvn_bc_pixel_size(vw && vw->set_format ? vw->format : t->d.format) != nvn_bc_pixel_size(im->nvn_format))) {
+        VKRED_ONCE(94, "decoded BC textures do not support render targets or raw-block views"); return VK_NULL_HANDLE;
+    }
     uint32_t lv0 = vw && vw->set_levels ? vw->base_level : 0, nlv = vw && vw->set_levels ? vw->nlevels : im->levels - lv0;
     if (lv0 >= im->levels) lv0 = im->levels - 1; if (!nlv || lv0 + nlv > im->levels) nlv = im->levels - lv0;
     // a 3D image drawn into: the view's layers are depth slices of its level (the image is 2D-array compatible). Xenoblade Chronicles 3 renders its 16x16x16 colour grading
@@ -455,7 +486,7 @@ VkImageView vk_tex_view(const tex_t *t, const view_t *vw, int dim, int arrayed, 
     VkFormatProperties fp; vkGetPhysicalDeviceFormatProperties(V.pd, fmt, &fp);
     uci.usage = VK_IMAGE_USAGE_SAMPLED_BIT | VK_IMAGE_USAGE_TRANSFER_SRC_BIT | VK_IMAGE_USAGE_TRANSFER_DST_BIT;
     if (as_attachment) uci.usage = (fp.optimalTilingFeatures & VK_FORMAT_FEATURE_COLOR_ATTACHMENT_BIT ? VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT : 0) | (fp.optimalTilingFeatures & VK_FORMAT_FEATURE_DEPTH_STENCIL_ATTACHMENT_BIT ? VK_IMAGE_USAGE_DEPTH_STENCIL_ATTACHMENT_BIT : 0);
-    else if ((t->d.flags & NVN_TEXTURE_FLAGS_IMAGE) && (fp.optimalTilingFeatures & VK_FORMAT_FEATURE_STORAGE_IMAGE_BIT)) uci.usage |= VK_IMAGE_USAGE_STORAGE_BIT;
+    else if (!base->bc_decode && (t->d.flags & NVN_TEXTURE_FLAGS_IMAGE) && (fp.optimalTilingFeatures & VK_FORMAT_FEATURE_STORAGE_IMAGE_BIT)) uci.usage |= VK_IMAGE_USAGE_STORAGE_BIT;
     VkImageViewCreateInfo ci = {VK_STRUCTURE_TYPE_IMAGE_VIEW_CREATE_INFO, &uci, 0, im->img, type, fmt, swz, {aspect, lv0, nlv, ly0, nly}};
     VkImageView view; VkResult r = vkCreateImageView(V.dev, &ci, NULL, &view);
     if (r) { pthread_mutex_unlock(&g_view_mu); VKRED_ONCE(15, "vkCreateImageView failed (%d): type %d format %d levels %u+%u layers %u+%u of image %ux%ux%u", r, type, fmt, lv0, nlv, ly0, nly, im->w, im->h, im->layers); return VK_NULL_HANDLE; }
@@ -636,6 +667,7 @@ void mtl_read_texels(const tex_t *t, unsigned level, unsigned layer0, const NVNc
     void mtl_sub_begin(void); uint64_t mtl_sub_commit(void); int mtl_wait(uint64_t, uint64_t);
     mtl_sub_begin();
     vkimg_t *im = vk_tex(t); const vkfmt_t *f = vk_fmt(t->d.format);
+    if (f && f->bc_decode) die("[vk] ReadTexels of decoded BC requires BC recompression (unsupported)");
     size_t depth = r->depth ? r->depth : 1;
     if (!im || !f) { mtl_sub_commit(); for (size_t z = 0; z < depth; z++) for (int y = 0; y < r->height; y++) memset(dst + z * img + (size_t)y * row, 0, row); return; }
     unsigned bw = f->bw ? f->bw : 1, bh = f->bh ? f->bh : 1;

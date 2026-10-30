@@ -131,6 +131,7 @@ class DataPack(unittest.TestCase):
             self.assertEqual((o / 'settings.txt').read_text(), 'docked=0\noverlay=1\nrumble=1\n')
             self.assertEqual((man['files'], man['bytes'], man['dlc'], man['requires']), (4, 35, [1], ['bcn']))   # the installer checks requires
             self.assertEqual(datapack.read_manifest(o)['package'], 'org.nx2a.neo')
+            self.assertEqual(man['bc_texture_fallback'], 'cpu')
         finally:
             shutil.rmtree(t, ignore_errors=True)
 

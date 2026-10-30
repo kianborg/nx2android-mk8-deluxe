@@ -1,6 +1,6 @@
 # Games
 
-Tested on a Lenovo Legion Y700 (Snapdragon 8 Elite, Adreno 830). The device's GPU must read BC-compressed textures (Adreno, Xclipse; not Mali or PowerVR).
+Tested on a Lenovo Legion Y700 (Snapdragon 8 Elite, Adreno 830), using native BC textures. Devices without native BC can use the experimental CPU decompression fallback described in [ARCHITECTURE.md](ARCHITECTURE.md); the statuses below do not establish compatibility or performance on those devices.
 
 | | |
 |:---:|:---:|

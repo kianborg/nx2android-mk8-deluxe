@@ -6,7 +6,7 @@ This is the Android port of [nxnative](https://github.com/seedds/nxnative), whic
 
 ## Games
 
-Each game is a profile in `nxnative/dm/games/<title ID>/` with an `android.tsv`. Which games play: [docs/PORT_STATUS.md](docs/PORT_STATUS.md); which ones each release has been checked to port: [docs/RELEASE_CHECK.md](docs/RELEASE_CHECK.md). The device's GPU must read BC-compressed textures (Adreno, Xclipse; not Mali or PowerVR).
+Each game is a profile in `nxnative/dm/games/<title ID>/` with an `android.tsv`. Which games play: [docs/PORT_STATUS.md](docs/PORT_STATUS.md); which ones each release has been checked to port: [docs/RELEASE_CHECK.md](docs/RELEASE_CHECK.md). Native BC texture support is preferred. The Android runtime can decode BC1–BC7 textures on the CPU when the Vulkan driver lacks it, using more RAM and loading time. This fallback is experimental; GPU family alone does not establish game compatibility.
 
 ## For players: port a game without programming
 

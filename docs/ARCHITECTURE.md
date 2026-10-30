@@ -40,7 +40,7 @@ A profile is offered for Android when it has an `android.tsv`; the profiles with
 | `tested` | `<version> <device>`: the version and device the status was checked on |
 | `package` | The app's package name (default `org.nx2a.t<title ID in lowercase>`) |
 | `orientation` | `landscape` (default) or `any` |
-| `requires` | Device features the game needs, checked by the installer: `bcn` (BC texture compression) |
+| `requires` | Device features the game needs, checked by the installer: `bcn` (BC texture compression). New data packs advertise the runtime's CPU BC fallback; older packs still require native BC. |
 | `setting` | `<name>=<value>`: the pause menu's defaults on first launch (`overlay`, `rumble`, `docked`, `fps`: the frame rate counter in the top left corner, off by default; `opacity`: the gamepad's, 20 to 80 percent by 5, 60 by default), written to the data pack's `settings.txt`, where the app also keeps the player's own gamepad layout from the pause menu's layout editor (`ui=` rows) |
 | `env` | `<KEY>=<VALUE>`: a host switch the game needs on Android, written to the data pack's `env.txt` |
 | `overlay` | `<tablet\|phone> <control> <x> <y>`: moves one on-screen control of that layout (`dm/android/overlay_default.tsv`) to x, y as fractions of the window, compiled into `android_profile.h` |
@@ -89,6 +89,14 @@ Vulkan translation runs in batches of 16 shaders, with at most `--jobs` translat
 For a machine running out of memory or becoming unresponsive, retry the same port with `--jobs 2`. Existing extraction and rewrite results are reused when their inputs are unchanged. Translation restarts; individual batches are not cached. Slow machines can raise the per-batch timeout with the `NX2A_SHADER_TIMEOUT` environment variable (seconds), or `--batch-timeout` when running `dm/android/tools/shader_vk.py` directly.
 
 The main log is `<game folder>/<title ID>_build/logs/android_shaders.log`. It records the translator work directory, containing `job_<n>.json` and `job_<n>.log`; failures retain these diagnostics. When reporting a stall, include the final log lines, OS, RAM, worker count, and game version. Do not share keys or game binaries.
+
+### BC textures on Android
+
+When `textureCompressionBC` is absent, packaged BC1–BC7 textures are deswizzled and decoded on the CPU using vendored bcdec. The guest retains compressed storage; Vulkan receives R8/RG8 (including signed normalized formats), RGBA8 (including sRGB), or RGBA16F for BC6H. Uploads include mipmaps, array/cube layers and 3D slices, and repeat when the existing dirty-page tracker detects CPU writes. Native BC uploads are unchanged on supported devices. `DM_VK_BC_DECODE=1` in the installed app's `env.txt` forces decoding for device comparisons; remove it and restart to return to automatic selection. Startup logs identify each decoded format.
+
+Compressed buffer-to-texture copies use an ordered GPU readback before CPU decoding; this stalls the queue and is intended for compatibility, not performance. Recompression of a decoded texture back into BC blocks (`CopyTextureToBuffer` or `ReadTexels`) is unsupported and stops with an explicit error. Rendering/storage writes to decoded BC textures and raw-block reinterpretation are unsupported. ASTC decompression is not provided. BC fallback alone does not guarantee a game works on a particular GPU.
+
+Decoded textures may occupy substantially more GPU memory than their compressed originals; memory statistics use the actual Vulkan allocation size. No shader rebuild is needed for this change, but porting again rebuilds the host and refreshes the APK and data-pack capability metadata. Phone rendering and performance require device validation.
 
 ## What the player installs
 

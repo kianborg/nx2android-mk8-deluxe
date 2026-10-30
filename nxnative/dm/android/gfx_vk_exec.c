@@ -5,6 +5,7 @@
 // Version 1 orders everything with whole-pipeline barriers around passes, copies and dispatches.
 #include "gfx_vk.h"
 #include "nvn_hmap.h"
+#include "../gfx/tex/nvn_bc.h"
 #include <math.h>
 #include <string.h>
 #include <sys/resource.h>
@@ -827,11 +828,13 @@ static int tex_desc_for(int st, const dmsv_bind *b, uint64_t h, VkDescriptorImag
     ii->imageLayout = VK_IMAGE_LAYOUT_GENERAL; ii->sampler = storage ? VK_NULL_HANDLE : samp_for(st, b, h); ii->imageView = VK_NULL_HANDLE;
     unsigned ck = ((unsigned)tid * 2654435761u ^ (unsigned)b->dim * 97u ^ (unsigned)(b->flags & 1)) % TVC;
     if (tid && g_var_now != 3 && !g_tracing && g_tvc[ck].epoch == g_set_epoch && g_tvc[ck].gen == g_tex_gen && g_tvc[ck].tid == tid && g_tvc[ck].dim == b->dim && g_tvc[ck].arr == (b->flags & 1)) {
+        if (storage && g_tvc[ck].im && vk_fmt(g_tvc[ck].im->nvn_format)->bc_decode) die("[vk] decoded BC storage writes are unsupported");
         ii->imageView = g_tvc[ck].v; if (g_tvc[ck].im) g_tvc[ck].im->last_use = mtl_last_fence() + 1; vk_texdump_note(g_tvc[ck].im); return g_tvc[ck].num;
     }
     int num = 0;
     if (tid && g_var_now != 3 && vk_tex_by_id(tid, &v, &t) && t) {
         vkimg_t *im = NULL; ii->imageView = vk_tex_view(t, v, b->dim, b->flags & 1, 0, &im); if (storage && im) im->gpu_w = 1;
+        if (storage && im && vk_fmt(im->nvn_format)->bc_decode) die("[vk] decoded BC storage writes are unsupported");
         if (g_tracing) VKLOG("  texture handle %#llx id %d: %ux%u nvn format %#x target %d serial %llu pool %p+%#llx size %#llx → image %p (%ux%u fmt %d layers %u levels %u) view %p", (unsigned long long)h, tid, t->d.width, t->d.height, t->d.format, t->d.target,
                              (unsigned long long)t->serial, (const void *)t->pool, (unsigned long long)t->off, (unsigned long long)t->L.size, (void *)im, im ? im->w : 0, im ? im->h : 0, im ? im->fmt : 0, im ? im->layers : 0, im ? im->levels : 0, (void *)ii->imageView);
         if (im) im->last_use = mtl_last_fence() + 1;
@@ -1451,6 +1454,44 @@ static void copy_b2t(const p_copy_b2t *c, int to_texture) {
     vk_end_pass_land();
     vkimg_t *im = vk_tex(c->tex); const vkfmt_t *f = vk_fmt(c->tex->d.format);
     if (!im || !f) return;
+    if (f->bc_decode) {
+        // The VkImage contains decoded pixels, but the guest copy buffer still
+        // contains BC blocks. Never hand those bytes to an uncompressed image.
+        if (!to_texture) die("[vk] decoded BC texture readback requires BC recompression (unsupported)");
+        uint32_t w = c->r.width, h = c->r.height ? c->r.height : 1, d = c->r.depth ? c->r.depth : 1;
+        unsigned level = c->has_view && c->view.set_levels ? c->view.base_level : 0;
+        unsigned layer = c->has_view && c->view.set_layers ? c->view.min_layer : 0;
+        if (c->r.width <= 0 || c->r.height < 0 || c->r.depth < 0 || c->r.xoffset < 0 || c->r.yoffset < 0 || c->r.zoffset < 0 ||
+            level >= im->levels || c->r.xoffset % 4 || c->r.yoffset % 4 ||
+            (uint64_t)c->r.xoffset + w > (im->w >> level ? im->w >> level : 1) ||
+            (uint64_t)c->r.yoffset + h > (im->h >> level ? im->h >> level : 1) ||
+            (uint64_t)c->r.zoffset + d + (im->layers > 1 ? layer : 0) > (im->layers > 1 ? im->layers : (im->d >> level ? im->d >> level : 1)))
+            die("[vk] invalid BC buffer upload region");
+        size_t rows = ((size_t)h + 3) / 4, bytes = ((size_t)w + 3) / 4 * f->bpb;
+        size_t row = S.row_stride > 0 ? (size_t)S.row_stride : bytes;
+        if (row < bytes || row > SIZE_MAX / rows) die("[vk] invalid BC upload row stride");
+        size_t slice = S.image_stride > 0 ? (size_t)S.image_stride : row * rows;
+        if (slice < row * rows || slice > SIZE_MAX / d) die("[vk] invalid BC upload slice stride");
+        size_t size = slice * (d - 1) + row * (rows - 1) + bytes;
+        VkBuffer src; VkDeviceSize src_off;
+        if (!vk_buf_at(c->src, size, &src, &src_off)) die("[vk] BC upload source outside memory pools");
+        if (src_off % 4 || size % 4) die("[vk] BC upload source must be word aligned");
+        uint8_t *blocks = malloc(size); if (!blocks) die("[vk] BC buffer readback allocation failed");
+        vk_buffer_snapshot(src, src_off, size, blocks);
+        size_t pixel = nvn_bc_pixel_size(c->tex->d.format), pitch = (size_t)w * pixel;
+        if (pitch > SIZE_MAX / h || pitch * h > SIZE_MAX / d) die("[vk] BC upload is too large");
+        size_t decoded_size = pitch * h * d; VkBuffer dst; VkDeviceSize dst_off;
+        void *decoded = vk_scratch(decoded_size, 16, &dst, &dst_off);
+        int result = nvn_bc_decode(c->tex->d.format, w, h, d, blocks, size, row, slice,
+                                   decoded, decoded_size, pitch, pitch * h);
+        free(blocks); if (result) die("[vk] BC buffer upload decode failed");
+        VkCommandBuffer cb = vk_cmd(); vk_tex_prepare(cb, im); vk_img_barrier_all(cb);
+        VkBufferImageCopy r = {dst_off, 0, 0, sub_of(im, &c->view, c->has_view, c->r.zoffset),
+                              {c->r.xoffset, c->r.yoffset, im->layers > 1 ? 0 : c->r.zoffset}, {w, h, im->layers > 1 ? 1 : d}};
+        if (im->layers > 1) r.imageSubresource.layerCount = d;
+        vkCmdCopyBufferToImage(cb, dst, im->img, VK_IMAGE_LAYOUT_GENERAL, 1, &r);
+        im->gpu_w = 1; vk_img_barrier_all(cb); return;
+    }
     VkBuffer b; VkDeviceSize o;
     if (!vk_buf_at(c->src, 1, &b, &o)) { VKRED_ONCE(70, "buffer of a buffer ↔ texture copy outside the memory pools"); return; }
     VkCommandBuffer cb = vk_cmd(); vk_tex_prepare(cb, im); vk_img_barrier_all(cb);

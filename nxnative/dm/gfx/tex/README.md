@@ -15,13 +15,16 @@ Block linear is how the Tegra X1 GPU stores textures: the data is not one row af
 | `nvn_fmt_mtl.h`, `nvn_fmt_mtl.c` | `nvn_fmt_to_mtl()`: NVN format (0x01–0x9C) → Metal pixel format + component remapping. Returns 1 for an exact match, 2 for a substitute (precision, bit order or interpretation differs and a conversion is needed), 0 when Metal has no corresponding format. How each format is handled is written in the comments inside the table. Pure C, no dependency on Metal headers |
 | `nvn_deswizzle.h`, `nvn_deswizzle.c` | `nvn_deswizzle()`: deswizzles one level and one layer from block linear to linear; `nvn_swizzle()`: the reverse, used for round trips in unit tests; `nvn_bl_offset()`: the block-linear address of a single point. Pure C |
 | `nvn_deswizzle_gpu.h`, `nvn_deswizzle_gpu.m` | A Metal compute shader version of the same deswizzling algorithm, used by the replay layer when uploading packaged textures; when initialization fails or an unsupported format is encountered, the replay layer falls back to the CPU version |
+| `nvn_bc.h`, `nvn_bc.c` | CPU BC1–BC7 decompression through vendored bcdec, including signed BC4/BC5, BC6H half-float output and clipped edge blocks. Used by the Android fallback after deswizzling |
 | `tests/` | Unit tests |
 
 The offsets of each level and layer within the storage, and the block height and block depth actually used by each level, are all taken from `../nvn/nvn_tex.c` (`nvn_tex_layout`, `nvn_tex_level_offset`, `nvn_tex_level_tiles`); this directory only does addressing and moving within a level. The game's packaged textures carry their own layout parameters, whose byte 0 is the log2 of the level 0 block height; when it is present it takes precedence (the `pkg_block_h` field of `nvn_texdesc`).
 
 ## BC textures
 
-Only GPUs with BC compressed textures are supported (`supportsBCTextureCompression` of `MTLDevice`: Apple silicon Macs and the latest iPhones), so BC textures are created and uploaded as BC; there is no decompression path. A BC texture is never a render target and its raw blocks are not sampled through an uncompressed view (Metal has no such views; Breath of the Wild encodes one 32×32 BC4 texture on the GPU, GitHub issue #4).
+The Metal path requires native BC support (`supportsBCTextureCompression` of `MTLDevice`: Apple silicon Macs and supported iPhones). Android uses native BC when available and otherwise decodes it on the CPU into uncompressed textures. Its guest storage remains BC, while uploaded images preserve channel count, signed normalization, sRGB interpretation and HDR values. See the root `docs/ARCHITECTURE.md` for fallback behavior and limitations. A decoded BC texture cannot be a render target or a raw-block storage view; recompression for readback is unsupported.
+
+The portable decoder, texture layout, upload and ordered buffer-readback checks run with `python -m unittest discover tests` from the root of nx2android. They do not require game files or a GPU. Device rendering remains a separate validation step.
 
 ## Tests
 

@@ -70,6 +70,7 @@ VkCommandBuffer vk_cmd(void);          // the current submission's main command 
 int vk_sub_open(void);                 // a submission is being recorded
 VkCommandBuffer vk_upload_cmd(void);   // the current submission's upload command buffer (runs before the main one)
 void *vk_scratch(VkDeviceSize n, VkDeviceSize align, VkBuffer *buf, VkDeviceSize *off);   // host-visible memory that lives until this submission completes
+void vk_buffer_snapshot(VkBuffer src, VkDeviceSize off, size_t len, void *dst); // ordered GPU readback for CPU BC decoding; outside a render pass
 void vk_defer_free_buffer(VkBuffer b, VkDeviceMemory m);   // destroyed once the GPU has passed the current submission
 void vk_defer_free_image(VkImage i, VkDeviceMemory m);
 VkDeviceMemory vk_image_memory(const VkMemoryRequirements *req, uint32_t type, VkDeviceSize *off, void **sub);   // NULL on failure; *sub: a slot of a shared block, or NULL (memory of its own)
@@ -79,7 +80,8 @@ VkDescriptorSet vk_alloc_set(VkDescriptorSetLayout l);    // from this submissio
 uint64_t vk_fence_done(void);   // the highest submission fence the GPU has completed
 
 // ---- formats and textures (gfx_vk_tex.c) ----
-typedef struct { VkFormat vk; VkComponentMapping swz; uint8_t kind; uint8_t depth, stencil, compressed, is_int, is_sint, bw, bh, bpb; } vkfmt_t;
+typedef struct { VkFormat vk; VkComponentMapping swz; uint8_t kind; uint8_t depth, stencil, compressed, is_int, is_sint, bw, bh, bpb, bc_decode; } vkfmt_t;
+// bw/bh/bpb describe guest storage, even when bc_decode uses an uncompressed image.
 const vkfmt_t *vk_fmt(int nvn_format);   // NULL when the format has no Vulkan counterpart on this device
 typedef struct vkimg vkimg_t;
 struct vkimg {
@@ -103,6 +105,7 @@ struct vkimg {
     VkBufferView tbuf;              // buffer textures: a texel buffer view of the pool
     uint64_t last_use;              // submission fence of the last use
     uint64_t pool; int64_t off, size; int flags;   // its storage (pool, offset, layout size) and NVN texture flags: images over the same memory find each other
+    VkDeviceSize allocation_size;   // Vulkan image bytes (decoded BC can exceed guest storage)
     struct vkimg *ovl[8]; int novl;   // the other images over some of the same memory (a texture of another description over it: on the Switch it sees these texels)
     uint64_t wseq, rseen;             // when it was last rendered to (gfx_vk_tex.c g_wseq); the newest overlapping write already reported
 };
