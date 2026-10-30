@@ -8,18 +8,21 @@
 #   control section, code area), translated beside the package's; a file whose content does not hash to its name, or whose key the package has, is left out
 # Bundle (read by the Vulkan backend, dm/android/gfx_vk_shader.c): "DMSV" u32 version, u32 count, then count entries {u64 key, u32 stage, u32 spv_off, u32 spv_len,
 #   u32 refl_off, u32 refl_len, u32 pad} sorted by key, then the blobs. refl is compact JSON: bindings, c1, local size, notes.
-import argparse, collections, concurrent.futures as cf, hashlib, json, os, re, struct, subprocess, sys, tempfile
+import argparse, collections, hashlib, json, os, re, struct, sys, tempfile
 from pathlib import Path
 
 HERE = Path(__file__).resolve().parent
 TOOLS = HERE.parent.parent / 'gfx/tools'
 sys.path.insert(0, str(TOOLS))
+from shader_jobs import translate
 import dmsh_facts, dmsh_chain   # noqa: E402  (DM_GAME picks the profile)
 
 ap = argparse.ArgumentParser()
 ap.add_argument('pkg'); ap.add_argument('out')
 ap.add_argument('--jobs', type=int, default=os.cpu_count() or 8)
 ap.add_argument('--keys', default='')
+ap.add_argument('--batch-timeout', type=float, default=float(os.environ.get('NX2A_SHADER_TIMEOUT', '600')),
+                help='maximum seconds per 16-shader batch (default: NX2A_SHADER_TIMEOUT or 600)')
 ap.add_argument('--dotnet', default=os.environ.get('DOTNET', 'dotnet'))
 ap.add_argument('--capture', help='a folder of shaders captured at run time on the device (<key>.bin)')
 ap.add_argument('--xlate', help="the translator (dmsh_xlate.dll) to run (default: the iOS chain's dm/gfx/tools/dmsh_xlate_bin; the porter builds one from the in-repo source)")
@@ -266,16 +269,17 @@ def main():
             if name not in packs: packs[name] = records(open(os.path.join(a.pkg, name), 'rb').read())
             stages[k], rec = name[:2], packs[name][idx]
         jobs[k], c1s[k] = job_for(k, stages[k], rec, w)
-    chunks = [keys[i::a.jobs] for i in range(a.jobs) if keys[i::a.jobs]]
-    def xl(ch):
-        jp = os.path.join(w, f'job_{abs(hash(ch[0]))}.json'); json.dump([jobs[k] for k in ch], open(jp, 'w'))
-        return subprocess.run([a.dotnet, XLATE_DLL, jp, w], capture_output=True, text=True, errors='replace')
-    print(f'translating {len(keys)} shaders in {len(chunks)} batches ...', flush=True)
-    with cf.ThreadPoolExecutor(len(chunks)) as ex: rs = list(ex.map(xl, chunks))
+    print(f'translating {len(keys)} shaders with {a.jobs} workers (batches of 16); diagnostics: {w}', flush=True)
+    try:
+        outputs = translate(jobs, [a.dotnet, XLATE_DLL], w, a.jobs, timeout=a.batch_timeout,
+                            report=lambda message: print(message, flush=True))
+    except (RuntimeError, ValueError, OSError) as e:
+        print(f'[RED] {e}', file=sys.stderr, flush=True)
+        return 1
     errs = collections.Counter()
-    for r in rs:
-        for ln in r.stderr.splitlines():
-            if ln.strip(): errs[ln.strip()[:120]] += 1
+    for output in outputs:
+        for ln in output.splitlines():
+            if ln.strip() and not ln.startswith('translated:'): errs[ln.strip()[:120]] += 1
     entries, fails = [], collections.Counter()
     for k in keys:
         spv_p, res_p = os.path.join(w, k + '.spv'), os.path.join(w, k + '.res.json')
@@ -297,4 +301,5 @@ def main():
     print(f'{len(entries)} of {len(keys)} shaders → {a.out} ({off / 2**20:.1f} MB); failed: {dict(fails)}; binding kinds: {dict(kinds_all)}')
     for e, n in errs.most_common(8): print(f'  translator: {n:5d}  {e}')
 
-main()
+if __name__ == '__main__':
+    sys.exit(main())

@@ -82,6 +82,14 @@ What the port refuses: a game whose `main` renders with Vulkan or OpenGL (the An
 
 Events: with `--progress json`, every line on stdout is one JSON object, the protocol of upstream's NSP script: `stage`, `step`, `progress`, `stage_end`, `say`; `porter` adds `result` (the outputs) at the end. A line starting `[RED] ` in a `say` is an error or warning.
 
+### Diagnosing shader translation stalls
+
+Vulkan translation runs in batches of 16 shaders, with at most `--jobs` translator processes at once. The CLI and GUI show processed and translated counts; a waiting message is emitted every 15 seconds while no batch completes. Each batch has a 600-second timeout. A crash, timeout, or incomplete batch stops the port and reports its shader keys and diagnostic log path, rather than accepting an incomplete process result. Individual shader errors reported by a completed translator batch retain the existing partial-bundle behavior.
+
+For a machine running out of memory or becoming unresponsive, retry the same port with `--jobs 2`. Existing extraction and rewrite results are reused when their inputs are unchanged. Translation restarts; individual batches are not cached. Slow machines can raise the per-batch timeout with the `NX2A_SHADER_TIMEOUT` environment variable (seconds), or `--batch-timeout` when running `dm/android/tools/shader_vk.py` directly.
+
+The main log is `<game folder>/<title ID>_build/logs/android_shaders.log`. It records the translator work directory, containing `job_<n>.json` and `job_<n>.log`; failures retain these diagnostics. When reporting a stall, include the final log lines, OS, RAM, worker count, and game version. Do not share keys or game binaries.
+
 ## What the player installs
 
 The player gets the bundle (`dist/nx2android-<version>.zip` from `python packaging/build_bundle.py`): unzip, start `nx2android.exe`, nothing to install with pip. It does not ship toolchains; the Setup tab (`nx2android.exe -m porter doctor`, or `python -m porter doctor` from the repository) checks them and the free disk space, and its **Download missing tools** button (`porter tools --download`, `porter/fetch.py`) fetches the missing NDK, .NET SDK and platform-tools from Google's SDK repository and Microsoft's release list, checks each archive against the checksum its list gives, and unpacks them into the player's nx2android folder (`toolchains/`), which the finders search:
