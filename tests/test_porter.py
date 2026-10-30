@@ -154,14 +154,14 @@ class DataPack(unittest.TestCase):
 
 class Experimental(unittest.TestCase):
     def test_ios_profile_copied_with_experimental_android_tsv(self):   # an iOS-only profile is copied out of the repository, never edited in place
-        odyssey = '0100000000010000'
+        ios_only = '010028600EBDA000'   # Super Mario 3D World + Bowser's Fury: an iOS profile without android.tsv or patches.py
         t = Path(tempfile.mkdtemp(prefix='nx2a_test_exp_')); environ = dict(os.environ)
         try:
-            port = pipeline.Port(pipeline.Options(folder=t, experimental=True)); port.env = {}; port.work = t / f'{odyssey}_build'; port.o.keys = None
-            g, ap = port.experimental_profile(game.load(odyssey), odyssey)
-            self.assertEqual(g.dir, (t / f'{odyssey}_build/profile/{odyssey}').resolve())
-            self.assertEqual((ap.status, ap.package), ('experimental', f'org.nx2a.t{odyssey}'))
-            self.assertFalse((REPO / f'nxnative/dm/games/{odyssey}/android.tsv').exists())
+            port = pipeline.Port(pipeline.Options(folder=t, experimental=True)); port.env = {}; port.work = t / f'{ios_only}_build'; port.o.keys = None
+            g, ap = port.experimental_profile(game.load(ios_only), ios_only)
+            self.assertEqual(g.dir, (t / f'{ios_only}_build/profile/{ios_only}').resolve())
+            self.assertEqual((ap.status, ap.package), ('experimental', f'org.nx2a.t{ios_only.lower()}'))
+            self.assertFalse((REPO / f'nxnative/dm/games/{ios_only}/android.tsv').exists())
             self.assertFalse((g.dir / 'patches.py').exists())   # patch_nso.py finds the per-build cuts in dm/games
             self.assertEqual(os.environ.get('DM_GAMES_FIRST'), '1')
         finally:

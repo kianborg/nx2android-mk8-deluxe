@@ -257,7 +257,7 @@ class Port:
             for p in todo:
                 say(f'decompressing {p.name} ({sizes[p] / 2**30:.2f} GB) → {d}')
                 self.unpacked[p] = dumps.decompress(p, d / dumps.unpacked_name(p), done)
-            PROG.end(f'{len(todo)} file{"s" if len(todo) > 1 else ""}, {nsp.amount(total, "B")}, each NCA checked against its SHA-256')
+            PROG.end(f'{len(todo)} file{"s" if len(todo) > 1 else ""}, {nsp.amount(total, "B")}, NCAs checked against their SHA-256 (not in ticketless dumps, whose NCA headers were rewritten)')
         return {p: self.unpacked.get(p, p) for p in paths}
 
     def drop_unpacked(self):

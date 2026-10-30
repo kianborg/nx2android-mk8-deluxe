@@ -3,7 +3,8 @@
 //   libdmhost.so in the app (a NativeActivity, no Java): ANativeActivity_onCreate lays out the game's files in the app's external files folder
 //   (/sdcard/Android/data/<package>/files: mods/ = the rewritten modules, RomFS/, shaders.dmsv; env.txt = KEY=VALUE switches; log.txt = the log), keeps saves in
 //   internal storage, and starts the host on a thread of its own. The window goes to the Vulkan backend's swapchain (dm_front_window); game controllers
-//   (KEYCODE_BUTTON_*, sticks, triggers, hat) feed player 1's pad; touches go to the game's touch screen; leaving and coming back pauses as on iOS.
+//   (KEYCODE_BUTTON_*, sticks, triggers, hat) feed player 1's pad; touches go to the game's touch screen; shaking the device shakes player 1's controller;
+//   leaving and coming back pauses as on iOS.
 #include "dm.h"
 #include "front.h"
 #include "dm_input.h"
@@ -18,6 +19,7 @@
 #include <android/native_activity.h>
 #include <android/window.h>
 #include <android/native_window.h>
+#include <android/sensor.h>
 #include <errno.h>
 #include <jni.h>
 #include <pthread.h>
@@ -99,9 +101,10 @@ static void hold_sync(void) {
     if (want != g_held) { g_held = want; if (want) { dm_movie_hold(1); dm_audio_suspend(1); guest_clock_freeze_for(1, 1); } else { guest_clock_freeze_for(1, 0); dm_audio_suspend(0); dm_movie_hold(0); } }
     pthread_mutex_unlock(&g_hold_mu);
 }
+static void shake_sensor(int on);   // the accelerometer, off in the background (input, below)
 static void go_background(void) { if (!atomic_load(&g_running) || atomic_exchange(&g_bg, 1)) return; dm_focus_set(2); dm_focus_set(3);   // through OutOfFocus, as a game sees HOME and then the suspension (front_mac.m does the same)
-    hold_sync(); dm_gfx_suspend(1); }
-static void go_foreground(void) { if (!atomic_load(&g_running) || !atomic_exchange(&g_bg, 0)) return; dm_gfx_suspend(0); hold_sync(); dm_focus_set(2); }
+    hold_sync(); dm_gfx_suspend(1); shake_sensor(0); }
+static void go_foreground(void) { if (!atomic_load(&g_running) || !atomic_exchange(&g_bg, 0)) return; dm_gfx_suspend(0); hold_sync(); dm_focus_set(2); shake_sensor(1); }
 static void on_pause(ANativeActivity *a) { (void)a; go_background(); }
 // Back in front, the game is out of focus until the window has the input focus again (Android sends it after onResume): without this it stayed OutOfFocus for good,
 // and Blasphemous 2's Unity, which asks for focus notifications, kept its title paused and ignored every press after a trip to another app. A window losing focus while in
@@ -123,8 +126,9 @@ static uint64_t key_bit(int32_t k) {   // Nintendo layout by position: the botto
     }
 }
 static int32_t axis(float v) { if (v > -0.12f && v < 0.12f) return 0; return (int32_t)(v * DM_STICK_MAX); }
+static uint64_t g_shake_btn;   // DM_BTN_SHAKE while the device is being shaken (below); input thread only
 static void pad_publish(void) {
-    uint64_t b = g_btn;
+    uint64_t b = g_btn | g_shake_btn;
     if (g_ax[4] > 0.5f) b |= DM_BTN_ZL; if (g_ax[5] > 0.5f) b |= DM_BTN_ZR;
     if (g_ax[6] < -0.5f) b |= DM_BTN_LEFT; if (g_ax[6] > 0.5f) b |= DM_BTN_RIGHT; if (g_ax[7] < -0.5f) b |= DM_BTN_UP; if (g_ax[7] > 0.5f) b |= DM_BTN_DOWN;
     dm_pad_set(b, axis(g_ax[0]), -axis(g_ax[1]), axis(g_ax[2]), -axis(g_ax[3]));   // Android's y grows downward, the Switch's upward
@@ -634,8 +638,47 @@ static int on_input(int fd, int events, void *data) {
     }
     return 1;
 }
+// ---- shaking the device: the controller is shaken (DM_BTN_SHAKE: its six-axis sensor, hle_hid.c; Super Mario Odyssey's cap throw), as the iOS front end does with the phone ----
+// The accelerometer at 60 Hz on the input thread's looper (no permission needed): gravity is followed by a slow low-pass (about 0.8 s), and a sample whose acceleration beyond it
+// exceeds DM_SHAKE_G (1.5 G by default; env.txt overrides) is a hit. The controller is shaken until 120 ms after the last hit: a flick is one shake (the host finishes it as a whole
+// cycle) and shaking on keeps it going. It goes through player 1's controller path, so it adds to the on-screen gamepad and a controller alike. Off while the app is in the background
+static ASensorEventQueue *g_sq; static const ASensor *g_accel;
+static void shake_sensor(int on) {
+    if (!g_sq || !g_accel) return;
+    // the rate goes with the registration: enableSensor + setEventRate left it at the default 200 ms on the Y700 (dumpsys sensorservice), too slow for a flick
+    if (on) ASensorEventQueue_registerSensor(g_sq, g_accel, 16667, 0); else ASensorEventQueue_disableSensor(g_sq, g_accel);
+}
+static int on_sensor(int fd, int events, void *data) {
+    (void)fd; (void)events; (void)data;
+    static double thr, gx, gy, gz, peak; static int64_t last = -1; static int init;
+    if (!thr) { const char *e = getenv("DM_SHAKE_G"); thr = e && atof(e) > 0 ? atof(e) : 1.5; }
+    ASensorEvent ev[16]; ssize_t n;
+    while ((n = ASensorEventQueue_getEvents(g_sq, ev, 16)) > 0) for (ssize_t i = 0; i < n; i++) {
+        if (ev[i].type != ASENSOR_TYPE_ACCELEROMETER) continue;
+        double x = ev[i].acceleration.x / ASENSOR_STANDARD_GRAVITY, y = ev[i].acceleration.y / ASENSOR_STANDARD_GRAVITY, z = ev[i].acceleration.z / ASENSOR_STANDARD_GRAVITY;
+        if (!init) { gx = x; gy = y; gz = z; init = 1; }
+        double dx = x - gx, dy = y - gy, dz = z - gz, g = sqrt(dx * dx + dy * dy + dz * dz);
+        gx += (x - gx) * 0.02; gy += (y - gy) * 0.02; gz += (z - gz) * 0.02;
+        if (g > thr) { if (last < 0) peak = 0; last = ev[i].timestamp; peak = fmax(peak, g); }
+        int on = last >= 0 && ev[i].timestamp - last < 120000000;
+        if (!on && last >= 0) { LOG("front end: device shaken (peak %.1f G)", peak); last = -1; }
+        uint64_t want = on ? DM_BTN_SHAKE : 0;
+        if (want != g_shake_btn) { g_shake_btn = want; pad_publish(); }
+    }
+    return 1;
+}
+static void shake_start(void) {
+    ASensorManager *m = ASensorManager_getInstanceForPackage(NULL);
+    g_accel = m ? ASensorManager_getDefaultSensor(m, ASENSOR_TYPE_ACCELEROMETER) : NULL;
+    if (!g_accel) { LOG("front end: no accelerometer, shaking the device does nothing"); return; }
+    g_sq = ASensorManager_createEventQueue(m, g_ilooper, 2, on_sensor, NULL);
+    const char *e = getenv("DM_SHAKE_G");
+    LOG("front end: shaking the device shakes the controller (threshold %.2f G)", e && atof(e) > 0 ? atof(e) : 1.5);
+    shake_sensor(!atomic_load(&g_bg));
+}
 static void *input_thread(void *a) {
     (void)a; g_ilooper = ALooper_prepare(0);
+    shake_start();
     for (;;) ALooper_pollOnce(-1, NULL, NULL, NULL);
     return NULL;
 }
