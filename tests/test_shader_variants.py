@@ -42,6 +42,7 @@ static uint32_t *spv_int_images(const uint32_t*w,uint32_t n,const uint16_t*b,con
 static uint32_t *spv_add_outputs(const uint32_t*w,uint32_t n,uint32_t mask,uint32_t*nn) {assert(mask==1);return change(w,n,nn,4);}
 static uint32_t *spv_vs_init(const uint32_t*w,uint32_t n,uint32_t*nn) {return change(w,n,nn,16);}
 static uint32_t *spv_frag_depth(const uint32_t*w,uint32_t n,uint32_t*nn) {return change(w,n,nn,1);}
+static uint32_t *spv_uint_outputs(const uint32_t*w,uint32_t n,uint32_t*nn) {return change(w,n,nn,64);}
 static uint32_t *spv_dual(const uint32_t*w,uint32_t n,uint32_t*nn) {return change(w,n,nn,2);}
 static uint32_t *vk_spv_depth_remap(const uint32_t*w,uint32_t n,uint32_t*nn) {return change(w,n,nn,8);}
 static VkShaderModule alt_module(vkshader_t*s) {(void)s;return (VkShaderModule)200;}
@@ -69,6 +70,8 @@ int main(void) {
     count=created;
     assert(vk_shader_module(&fs,0,0,0,VK_SHADER_DUAL_SOURCE)==(VkShaderModule)102 && created==count);
     assert(vk_shader_module(&fs,0,0,0,VK_SHADER_CLIP_DEPTH)==fs.mod);
+    assert(vk_shader_module(&fs,0,0,0,VK_SHADER_UINT_OUTPUT)==(VkShaderModule)164);
+    assert(vk_shader_module(&vs,0,0,0,VK_SHADER_UINT_OUTPUT)==vs.mod);
     fs.depth_repl=1;
     assert(vk_shader_module(&fs,0,0,0,VK_SHADER_DUAL_SOURCE|VK_SHADER_FRAG_DEPTH)==(VkShaderModule)102);
     assert(vk_shader_module(&gs,0,0,0,VK_SHADER_CLIP_DEPTH)==(VkShaderModule)108);

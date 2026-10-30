@@ -318,6 +318,10 @@ static void pass_dump_depth(void);
 static void texdump_flush(void);
 static void pass_dump(void) {
     texdump_flush();
+    if (S.rt_has_col[0] && S.rt_has_cview[0] && S.rt_cview[0].set_format) {
+        const vkfmt_t *base = vk_fmt(S.rt_col[0].d.format), *view = vk_fmt(S.rt_cview[0].format);
+        if (base && base->bc_decode && view && !view->bc_decode) return;
+    }
     if (g_pd_state == 1 && g_sub_pass - 1 < g_pd_skip) return;   // (a submission with fewer passes dumps nothing, and the next one is tried)
     if (g_pd_state == 1 && g_pd_from[0]) { char wh[32]; snprintf(wh, sizeof wh, "%ux%u", S.pass_w, S.pass_h); if (strcmp(wh, g_pd_from)) return; g_pd_from[0] = 0; }
     if (!g_pd_size[0]) pass_dump_depth();
@@ -469,6 +473,7 @@ void vk_end_pass(void) {
     if (S.pass_open == 1) { if (S.rp_pass) vkCmdEndRenderPass(vk_cmd()); else vkCmdEndRendering(vk_cmd()); void vk_pass_ts(int end, uint32_t w, uint32_t h, uint32_t fmt, uint32_t draws); vk_pass_ts(1, S.pass_w, S.pass_h, (uint32_t)S.cfmt[0], (uint32_t)g_pass_draws | (g_pass_draws ? (uint32_t)((g_pass_bb[2] - g_pass_bb[0]) & 0xffff) << 16 : 0));  pass_dump(); if (g_x_tracepass >= 0 && g_sub_pass - 1 == g_x_tracepass) { setenv("DM_VK_TRACE_PASS", "-1", 1); g_x_tracepass = -1; } }
     if (S.pass_open == 1) crumb_mark(0);
     S.pass_open = 0; S.bound_pipe = VK_NULL_HANDLE; g_tf_in_pass = 0;
+    vk_bc_flush_targets();
 }
 // a pass end before something that reads or writes pool memory other than through a uniform binding (copies, fills, dispatches, buffer ↔ texture
 // copies, the submission's end): the deferred uniform updates land first (draws read them through their shadows, so ordinary pass ends keep them)
@@ -486,10 +491,13 @@ static int begin_pass(void) {
         S.cfmt[i] = VK_FORMAT_UNDEFINED;
         ca[i].sType = VK_STRUCTURE_TYPE_RENDERING_ATTACHMENT_INFO; ca[i].imageLayout = VK_IMAGE_LAYOUT_GENERAL; ca[i].loadOp = VK_ATTACHMENT_LOAD_OP_LOAD; ca[i].storeOp = VK_ATTACHMENT_STORE_OP_STORE;
         if (!S.rt_has_col[i]) continue;
-        vkimg_t *im; VkImageView v = vk_tex_view(&S.rt_col[i], S.rt_has_cview[i] ? &S.rt_cview[i] : NULL, 0xff, 0, 1, &im);
+        vkimg_t *im = NULL;
+        const view_t *view = S.rt_has_cview[i] ? &S.rt_cview[i] : NULL;
+        VkImageView v = vk_bc_target(i, &S.rt_col[i], view, &im); int bc_shadow = v != VK_NULL_HANDLE;
+        if (!v) v = vk_tex_view(&S.rt_col[i], view, 0xff, 0, 1, &im);
         if (!v) continue;
         vk_tex_prepare(cb, im);
-        uint32_t lv = S.rt_has_cview[i] && S.rt_cview[i].set_levels ? S.rt_cview[i].base_level : 0;
+        uint32_t lv = !bc_shadow && view && view->set_levels ? view->base_level : 0;
         uint32_t iw = im->w >> lv ? im->w >> lv : 1, ih = im->h >> lv ? im->h >> lv : 1;
         if (iw < w) w = iw; if (ih < h) h = ih; samples = im->samples; have = 1;
         ca[i].imageView = v; S.cfmt[i] = vk_view_fmt; ncol = i + 1; P_att[i].im = im;   // (the view's format: a render pass's attachment and its pipelines take it)
@@ -591,7 +599,7 @@ static VkPipeline mc_pipeline(uint32_t mask) {
 }
 static int g_bc_stale;
 static int clear_masked(const p_clear_color *c, VkRect2D r) {   // 1 = done
-    const vkfmt_t *f = vk_fmt(S.rt_col[c->index].d.format);
+    const vkfmt_t *f = vk_fmt(S.rt_has_cview[c->index] && S.rt_cview[c->index].set_format ? S.rt_cview[c->index].format : S.rt_col[c->index].d.format);
     if (c->index != 0 || (f && f->is_int)) return 0;
     VkPipeline p = mc_pipeline(c->mask); if (!p) return 0;
     if (!pass_commit()) return 1;
@@ -610,7 +618,7 @@ static void clear_color(const p_clear_color *c) {
     if ((c->mask & 0xf) != 0xf) { VkRect2D r = scissor_rect(); if (!r.extent.width || !r.extent.height) return;
         if (clear_masked(c, r)) return; VKRED_ONCE(31, "partial channel clear mask %#x cleared in full", c->mask); }
     VkClearAttachment a = {VK_IMAGE_ASPECT_COLOR_BIT, (uint32_t)c->index, {{{c->rgba[0], c->rgba[1], c->rgba[2], c->rgba[3]}}}};
-    const vkfmt_t *f = vk_fmt(S.rt_col[c->index].d.format);
+    const vkfmt_t *f = vk_fmt(S.rt_has_cview[c->index] && S.rt_cview[c->index].set_format ? S.rt_cview[c->index].format : S.rt_col[c->index].d.format);
     if (f && f->is_int) for (int i = 0; i < 4; i++) { if (f->is_sint) a.clearValue.color.int32[i] = (int32_t)c->rgba[i]; else a.clearValue.color.uint32[i] = c->rgba[i] > 0 ? (uint32_t)c->rgba[i] : 0; }
     VkClearRect r = {scissor_rect(), 0, 1};
     if (S.pass_open == 2 && (c->mask & 0xf) == 0xf && pass_whole(r.rect)) {   // the whole attachment before any draw: its load op
@@ -717,7 +725,7 @@ typedef struct {
     uint32_t nbind; struct { uint32_t binding, stride, rate, divisor; } bind[17];
     uint32_t ncol, cfmt[8], dfmt, samples, a2c, blend_en, logic_en, logic_op, wmask[8];
     struct { uint32_t src, dst, srca, dsta, eq, eqa; } bl[8];
-    uint32_t clip_neg1, alt, fdz, dual;   // fdz: the fragment shader's variant that writes gl_FragDepth = gl_FragCoord.z (fdz below); dual: its dual-source variant (below)
+    uint32_t clip_neg1, alt, fdz, dual, uint_outputs;   // fdz: the fragment shader's variant that writes gl_FragDepth = gl_FragCoord.z (fdz below); dual: its dual-source variant (below)
     uint64_t um[3], im[3];   // each stage's sampled bindings given integer views (vk_shader_module)
 } pkey;
 static nvn_hmap g_pipes = {.klen = sizeof(pkey)}; static pthread_mutex_t g_pipe_mu = PTHREAD_MUTEX_INITIALIZER;   // the replay thread and the prewarm threads
@@ -801,7 +809,7 @@ static VkPipeline build_pipeline(const pkey *k, VkPipelineLayout layout, vkshade
         int remap = k->clip_neg1 && !V.has_depth_clip_ctl && i == (stg[2] ? 2 : 0) && !k->raster_discard;
         ss[ns++] = (VkPipelineShaderStageCreateInfo){VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_CREATE_INFO, NULL, 0, fl[i],
             vk_shader_module(stg[i], k->um[i], k->im[i], k->alt && !remap && !k->um[i] && !k->im[i] && !xo[i] ? 1u << 31 : xo[i],
-                             (i == 1 ? (k->fdz ? VK_SHADER_FRAG_DEPTH : 0) | (k->dual ? VK_SHADER_DUAL_SOURCE : 0) : 0) | (remap ? VK_SHADER_CLIP_DEPTH : 0)), "main", NULL};
+                             (i == 1 ? (k->fdz ? VK_SHADER_FRAG_DEPTH : 0) | (k->dual ? VK_SHADER_DUAL_SOURCE : 0) | (k->uint_outputs ? VK_SHADER_UINT_OUTPUT : 0) : 0) | (remap ? VK_SHADER_CLIP_DEPTH : 0)), "main", NULL};
     }
     VkVertexInputAttributeDescription ad[16]; VkVertexInputBindingDescription bd[17]; VkVertexInputBindingDivisorDescriptionEXT dd[17]; uint32_t ndd = 0;
     for (uint32_t i = 0; i < k->nattr; i++) ad[i] = (VkVertexInputAttributeDescription){k->attr[i].loc, k->attr[i].binding, (VkFormat)k->attr[i].fmt, k->attr[i].off};
@@ -1263,6 +1271,12 @@ static int prepare_draw(int prim, int indexed) {
     #define SRC1F(x) ((x) >= 0x10 && (x) <= 0x13)
     k.dual = (k.blend_en & 1) && S.sh[1] && !k.raster_discard && (SRC1F(k.bl[0].src) || SRC1F(k.bl[0].dst) || SRC1F(k.bl[0].srca) || SRC1F(k.bl[0].dsta));
     #undef SRC1F
+    k.uint_outputs = S.sh[1] && !k.raster_discard && k.ncol > 0;
+    for (uint32_t i=0;i<k.ncol;i++) if (k.cfmt[i]) {
+        const view_t *v=S.rt_has_cview[i]?&S.rt_cview[i]:NULL;
+        const vkfmt_t *f=vk_fmt(v && v->set_format?v->format:S.rt_col[i].d.format);
+        if (!f || !f->is_int || f->is_sint) k.uint_outputs=0;
+    }
     k.clip_neg1 = !g_depth_zero;
     // layout and pipeline
     VkDescriptorSetLayout dsl[5] = {0}; int nsets = 0;

@@ -22,7 +22,7 @@ The offsets of each level and layer within the storage, and the block height and
 
 ## BC textures
 
-The Metal path requires native BC support (`supportsBCTextureCompression` of `MTLDevice`: Apple silicon Macs and supported iPhones). Android uses native BC when available and otherwise decodes it on the CPU into uncompressed textures. Its guest storage remains BC, while uploaded images preserve channel count, signed normalization, sRGB interpretation and HDR values. See the root `docs/ARCHITECTURE.md` for fallback behavior and limitations. A decoded BC texture cannot be a render target or a raw-block storage view; recompression for readback is unsupported.
+The Metal path requires native BC support (`supportsBCTextureCompression` of `MTLDevice`: Apple silicon Macs and supported iPhones). Android uses native BC when available and otherwise decodes it on the CPU into uncompressed textures. Its guest storage remains BC, while uploaded images preserve channel count, signed normalization, sRGB interpretation and HDR values. See the root `docs/ARCHITECTURE.md` for fallback behavior and limitations. Matching unsigned-integer render-target views can generate BC blocks through a temporary raw image, followed by synchronous readback and decoding (one mip/layer at a time). Direct rendering into decoded pixels, raw sampled/storage views and recompression for readback remain unsupported.
 
 The portable decoder, texture layout, upload and ordered buffer-readback checks run with `python -m unittest discover tests` from the root of nx2android. They do not require game files or a GPU. Device rendering remains a separate validation step.
 
