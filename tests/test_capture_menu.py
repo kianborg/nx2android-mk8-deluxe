@@ -93,3 +93,18 @@ class MenuCaptureTests(unittest.TestCase):
         packet['uniforms'][1]['binding'] = 3
         with self.assertRaises(ValueError):
             capture.packet_files(packet, 9000)
+
+
+    def test_wheel_capture_keeps_consecutive_frames_and_does_not_change_depth_workaround(self):
+        env=capture.capture_env(b'DM_VK_DRIVER=turnip\nDM_VK_BC_DECODE=1\nDM_VK_FDZ=1\n',9000,'wheel-light')
+        self.assertIn(b'DM_VK_FDZ=1\n',env)
+        self.assertIn(b'DM_VK_PASSDUMP_FRAMES=16\n',env)
+        self.assertIn(b'DM_VK_PASSDUMP_SIZE=480x270,640x360\n',env)
+        shots=next(line for line in env.decode().splitlines() if line.startswith('DM_VK_SHOT='))
+        self.assertEqual(shots.split('=',1)[1].split(','),list(map(str,range(9000,9016))))
+        log='frame trace begins at present 9000\n'+''.join(
+            f"pass dump {i:02d} is the submission's pass 17 (present {9000+i})\n"
+            f"pass dump {i:02d}: 480x270 format 122 → /files/pass_{i:02d}.ppm\n" for i in range(16))
+        self.assertEqual(len(capture.pass_files(log,9000,16)),16)
+        with self.assertRaises(ValueError):capture.pass_files(log,9000)
+        with self.assertRaises(ValueError):capture.pass_files(log.split('pass dump 07')[0],9000,16)

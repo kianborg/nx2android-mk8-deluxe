@@ -625,3 +625,46 @@ work/mk8-wheel-depth-test/env-before.txt. The helper's one-switch preservation
 and invalid-test rejection are regression-tested. A new random crash was also
 reported alongside the first wheel clip; no new crash evidence has been
 provided with the direct recording, so it remains a separate open report.
+
+## Wheel-depth comparison negative; temporal lighting capture
+
+The user reports that DM_VK_FDZ=0 still flickers. This makes that automatic
+fragment-depth variant a less likely explanation; it is not proof that all
+depth testing or synchronization is correct. Restore the comparison before
+another experiment. The confirmed texture-view fix remains in place.
+
+The direct screen recording establishes that brightness changes persist in
+rendered output while the tire outline/rim lines are stable. The single-frame
+pass trace cannot establish which pass changes between bright and dark states.
+A new helper mode, `--shadow-test wheel-light`, uses the installed runtime's
+existing size/format filters to record half-resolution local-light targets and
+matching final frames for 16 scheduled presents. It enables no draw skipping
+or shader modification. It selects 480x270 or 640x360 colour targets with first
+two recorded formats 122/122, which also admits matching bloom intermediates;
+the trace/pass IDs distinguish them. Only colour target zero is dumped in this
+first comparison, not both MRT outputs. It is not a complete validation of the
+specular attachment. At most 96 intermediate images are retained; collection
+requires at least eight distinct presents to avoid accepting a one-frame dump.
+
+No APK rebuild is needed:
+
+```bash
+git pull --ff-only
+python3 devtools/pipeline_stability.py restore --test wheel-depth
+python3 devtools/capture_menu.py start --scene shadows --shadow-test wheel-light
+```
+
+Enter Time Trials at the same stationary antigravity view and leave it open.
+After about six minutes from launch, collect:
+
+```bash
+python3 devtools/capture_menu.py collect --scene shadows --shadow-test wheel-light
+```
+
+Send `work/mk8-shadows-wheel-light-capture/mk8-shadows-wheel-light-diagnostics.zip`.
+The helper restores its original env.txt on successful collection. If a capture
+error occurs, preserve the directory and log rather than rerunning the race;
+existing pass files may suffice. GPU readbacks/frame shots alter timing, so a
+capture in which flicker disappears cannot alone establish a fix. The next
+analysis compares changing light targets with the final wheel illumination;
+there is not yet a justified runtime flicker patch.

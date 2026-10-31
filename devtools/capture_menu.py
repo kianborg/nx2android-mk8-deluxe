@@ -25,18 +25,27 @@ def capture_env(original, frame, shadow_test='baseline'):
             raise ValueError('Restore the map-off experiment before capturing normal shadow inputs.')
         rows += ['DM_VK_DRAW_PACKET=b2cfa260c7494f18', f'DM_VK_DRAW_PACKET_AT={frame}',
                  'DM_VK_PASSDUMP_RGBA=1', 'DM_VK_TEXDUMP_SHADER=6aa6c36ed6065b7d', 'DM_VK_TEXDUMP_BINDING=2']
+    frames = 16 if shadow_test == 'wheel-light' else 1
+    if shadow_test == 'wheel-light':
+        if any(row.strip().startswith('DM_VK_X_SKIPVS=') and row.split('=',1)[1].strip() for row in rows):
+            raise ValueError('Restore draw-skip experiments before the wheel capture.')
+        rows += ['DM_VK_PASSDUMP_SIZE=480x270,640x360', 'DM_VK_PASSDUMP_FMT=122/122',
+                 'DM_VK_PASSDUMP_DEPTH=0']
+    shots = list(range(frame, frame+frames)) if frames>1 else [frame,frame+2]
     rows += [f'DM_VK_TRACE_AT={frame}', 'DM_VK_TRACE_FRAME=*',
-             f'DM_VK_PASSDUMP={frame}', 'DM_VK_PASSDUMP_FRAMES=1',
-             f'DM_VK_SHOT={frame},{frame+2}']
+             f'DM_VK_PASSDUMP={frame}', f'DM_VK_PASSDUMP_FRAMES={frames}',
+             'DM_VK_SHOT='+','.join(map(str,shots))]
     return ('\n'.join(rows)+'\n').encode()
 
 
-def pass_files(log, frame):
+def pass_files(log, frame, frames=1):
     records = re.findall(r'pass dump (\d+) is the submission\'s pass (-?\d+) \(present (\d+)\)', log)
     if not records or not any(int(present) >= frame for _, _, present in records):
         raise ValueError('Capture has not reached the scheduled frame; keep the affected scene visible and retry collect.')
-    if any(not frame <= int(present) <= frame+8 for _, _, present in records):
+    if any(not frame <= int(present) <= frame+frames+7 for _, _, present in records):
         raise ValueError('Dump presents do not match this capture; keep log.txt for inspection.')
+    if frames>1 and len({int(present) for _,_,present in records})<min(frames,8):
+        raise ValueError('Not enough temporal pass frames have finished writing; keep the view open and retry collect.')
     completed = {int(i) for i in re.findall(r'pass dump (\d+): .* → ', log)}
     indices = {int(i) for i, _, _ in records}
     if not indices <= completed:
@@ -72,7 +81,7 @@ def main():
     ap = argparse.ArgumentParser(description=__doc__)
     ap.add_argument('action', choices=['start', 'collect', 'restore'])
     ap.add_argument('--scene', choices=['menu', 'shadows'], default='menu')
-    ap.add_argument('--shadow-test', choices=['baseline', 'map-off', 'uniforms'], default='baseline',
+    ap.add_argument('--shadow-test', choices=['baseline', 'map-off', 'uniforms', 'wheel-light'], default='baseline',
                     help='uniforms captures normal shadow inputs (updated APK); map-off is the earlier inconclusive skip experiment')
     ap.add_argument('--output', type=Path)
     ap.add_argument('--frame', type=int, help='capture present (default: menu 6000, shadows 9000)')
@@ -117,7 +126,7 @@ def main():
         (out/'capture-env.txt').write_bytes(settings)
         before = shell('cat', root+'/log.txt')
         (out/'capture.json').write_text(json.dumps({'frame': args.frame,
-            'scene': args.scene, 'shadow_test': args.shadow_test, 'previous_log_sha256': hashlib.sha256(before).hexdigest()}, indent=2)+'\n')
+            'scene': args.scene, 'shadow_test': args.shadow_test, 'capture_frames': 16 if args.shadow_test=='wheel-light' else 1, 'previous_log_sha256': hashlib.sha256(before).hexdigest()}, indent=2)+'\n')
         shell('am', 'force-stop', PACKAGE)
         run('push', str(out/'capture-env.txt'), root+'/env.txt')
         print(f'Capture armed for present {args.frame}. Open the game manually now.')
@@ -126,6 +135,8 @@ def main():
                 print('DIAGNOSTIC: the shadow-map resolve draw is disabled. This is not a permanent fix.')
             if args.shadow_test == 'uniforms':
                 print('Capturing normal shadow inputs, including vertex/fragment uniforms and mask RGBA. Requires updated APK.')
+            if args.shadow_test == 'wheel-light':
+                print('Capturing 16 consecutive lighting/output frames; keep the kart and camera still.')
             print('Choose Time Trials, Mario Kart Stadium. Drive onto the banked antigravity section.')
             print('Stop where the cyan shadow is visible; keep the race view open without pausing.')
             print('The default delay is 5 minutes at 30 FPS, 3.75 minutes at 40 FPS.')
@@ -142,10 +153,12 @@ def main():
         (out/'log.txt').write_bytes(log)
         if hashlib.sha256(log).hexdigest() == meta['previous_log_sha256']:
             raise ValueError('The game has not produced a new log since start.')
-        files = pass_files(log.decode('utf-8', errors='replace'), meta['frame'])
+        count = meta.get('capture_frames', 1)
+        files = pass_files(log.decode('utf-8', errors='replace'), meta['frame'], count)
         for name in files:
             run('pull', root+'/'+name, str(out/name))
-        for frame in (meta['frame'], meta['frame']+2):
+        shots = range(meta['frame'], meta['frame']+count) if count>1 else (meta['frame'], meta['frame']+2)
+        for frame in shots:
             name = f'frame_{frame:06d}.ppm'
             run('pull', root+'/'+name, str(out/name))
             files.append(name)
