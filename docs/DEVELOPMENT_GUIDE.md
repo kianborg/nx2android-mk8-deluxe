@@ -29,6 +29,18 @@ python -m porter port "D:\Games\NEO" -k "D:\keys\prod.keys" --install
 
 The APK (`NeoTheWorldEndsWithYou.apk`) and the data pack (`NeoTheWorldEndsWithYou-data/`) appear in the game folder (`-o` picks another). The first port takes a while (extraction, rewriting the game's code, translating its shaders); later ones reuse what has not changed. `python -m porter -h` lists the commands.
 
+### Saves
+
+`porter saves` does what the app's **Saves** tab does (see the README's [Saves](../README.md#saves)):
+
+```
+python -m porter saves list
+python -m porter saves export "D:\Backups\Celeste"
+python -m porter saves import "D:\Backups\Celeste\20261030-141200"
+```
+
+How the export folders are laid out: [ARCHITECTURE.md](ARCHITECTURE.md#saves).
+
 ## Layout
 
 - `porter/`: the port pipeline (`python -m porter`).
