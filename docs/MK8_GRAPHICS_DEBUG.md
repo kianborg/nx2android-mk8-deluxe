@@ -219,3 +219,31 @@ BC texture shadow path. See [TURNIP_TEST.md](TURNIP_TEST.md) for the exact
 package and setup. The evidence establishes a driver-dependent workaround,
 not the precise internal cause of the Qualcomm failures. User captures remain
 outside the repository.
+
+
+## Remaining visual issues in the Turnip follow-up screenshots
+
+The user's subsequent Photos-1-001.zip contains two screenshots:
+
+- Screenshot_20261031-153700.png: on Stadium's banked antigravity section,
+  bright cyan silhouettes lie on the road beneath/behind the kart and trailing
+  banana. Their colour and hard edges are suspicious for a projected shadow
+  or related effect. A still image does not establish the exact responsible
+  draw, whether it flickers, or whether the fault is limited to antigravity.
+- Screenshot_20261031-152254.png: the cup-selection background is normally
+  blue, but yellow symbols (Star, Banana, Lightning and Triforce) appear cyan,
+  and the Mushroom symbol looks purple. The track preview thumbnails retain
+  plausible colours, as do the yellow selection brackets and buttons. This is
+  selective colour corruption, not evidence for changing the entire frame's
+  colour balance.
+
+A common texture-channel or intermediate render-target issue is worth testing,
+but the screenshots do not prove the two effects share a cause. Inspection of
+Vulkan blend-factor/equation conversion found those mappings consistent with
+NVN's enum definitions; this does not validate the states of the affected draws.
+Next evidence should be a bounded pass/texture capture of cup selection first
+(a stationary reproducible screen), followed by the affected antigravity frame.
+Compare each affected texture, its view swizzle/format and the first pass that
+introduces the wrong colours. Keep the working Turnip and CPU BC settings;
+do not apply a global red/blue swap or disable CPU BC decoding as a workaround.
+No runtime fix has yet been validated for these follow-up issues.
