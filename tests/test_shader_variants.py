@@ -13,7 +13,7 @@ DM = ROOT/'nxnative/dm'
 class ShaderVariants(unittest.TestCase):
     def test_independent_variant_bits_and_cache_entries(self):
         source = (DM/'android/gfx_vk_shader.c').read_text()
-        start = source.index('VkShaderModule vk_shader_module(',0)
+        start = source.index('static VkShaderModule vk_shader_module_(',0)
         function = source[start:source.index('\n// static buffers:', start)]
         executor = (DM/'android/gfx_vk_exec.c').read_text()
         start = executor.index('static int vertex_integer_kind(')
@@ -21,6 +21,8 @@ class ShaderVariants(unittest.TestCase):
         code = r'''
 #include <vulkan/vulkan_core.h>
 #include <pthread.h>
+#include <time.h>
+int g_prof_on; uint64_t g_prof_ns[8];
 #include <stdint.h>
 #include <assert.h>
 #include <stdlib.h>
