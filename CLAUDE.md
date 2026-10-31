@@ -10,6 +10,13 @@ The skills in `.claude/skills/` (nx2android-dev, switch-android-port) hold the f
 - Delete `.gamedump/<App>/` when the work is done (port committed, test app uninstalled). First check that each dump file has 2 or more links (`fsutil hardlink list <file>`); a file with one link is the only copy, so ask first. The PC has little disk space.
 - Before ending a session that made a `.gamedump` folder or wrote more than 1 GB anywhere, say which folders are left and why.
 
+## Worktrees
+
+- Always clean up a worktree after its branch is merged into main: remove the worktree and delete the merged branch (`git branch -d`). A session's own worktree goes when the session is archived; say so before ending the session.
+- `tools/` (the NDK, the .NET SDK, platform-tools and `prod.keys`) exists only in the main checkout. It is git-ignored, and porter's config points to it by absolute path, so a worktree needs no copy of it. Never make a junction or link to it inside a worktree.
+- A link to `tools/` inside a worktree is the main checkout's real folder: a recursive delete of the worktree goes through it and deletes the real files. On 2026-10-31, removing a worktree in Fork deleted the NDK, the .NET SDK and `prod.keys` through a `tools` junction.
+- Before you remove a worktree (with git, Fork or any other tool), list its links (`Get-ChildItem -Force <worktree> -Recurse -Attributes ReparsePoint`) and remove each link alone with `cmd /c rmdir <link>` (no `/s`: that removes only the link). Then remove the worktree.
+
 ## Releases
 
 - Version `0.MINOR.PATCH` in `porter/__init__.py`: a release with only new games and bug fixes (a core `fix(...)` included) raises the patch; any other core change (a feature or a change in behaviour) raises the minor; the major stays 0 (docs/DEVELOPMENT_GUIDE.md, Releases and version numbers).
