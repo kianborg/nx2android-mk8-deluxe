@@ -376,3 +376,28 @@ from persistent prewarm records. The regression suite passes 101 tests and the
 Android release build compiles 142 sources with zero failures. The next phone
 test should use this synced baseline with the map-off diagnostic removed; there
 is no justified additional shadow patch yet.
+
+## First race-entry crash after the upstream merge
+
+The user reports one crash entering Time Trials on first boot after updating,
+then successful launches, with antigravity shadows still incorrect. There is
+no crash log yet; background pipeline compilation, driver faults and memory
+pressure are hypotheses, not established causes. A successful warm-cache
+restart cannot discriminate among them.
+
+`python3 devtools/collect_crash.py` reads the current game log/settings, Android's
+crash buffer (last 2000 records) and the package's historical exit information.
+It writes a timestamped diagnostic ZIP without stopping the app, clearing logs,
+changing settings or removing caches. Collect now while historical records may
+remain, and immediately after another crash before reopening the game. Logs
+may have expired, and the current game log may already belong to the successful
+restart; absence of a crash there is not proof of its cause.
+
+A reversible comparison can add `DM_VK_ASYNC_PIPE=0` and `DM_VK_NOPREWARM=1` to
+an otherwise preserved working env.txt, then restart. The first disables
+first-use background graphics compilation; the second disables graphics and
+compute prewarm workers. This comparison can increase startup/loading stalls.
+Do not delete shader/pipeline caches or app data to force a crash before the
+initial report is examined. Warm-cache success alone cannot prove the fix.
+Keep Turnip and forced CPU BC decoding enabled. Do not combine this comparison
+with the rejected shadow-map-off experiment.
