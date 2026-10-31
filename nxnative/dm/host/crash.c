@@ -73,9 +73,13 @@ void crash_off(const char *tag, uint64_t a) {   // Also used by diag.c
 #define off crash_off
 
     module_t *m = module_of((void *)a);
-    Dl_info di;
+    Dl_info di = {0};
     if (m) fprintf(stderr, " %s%s%s+%#llx", tag, *tag ? "=" : "", m->name, a - (uint64_t)m->base);
     else if (dladdr((void *)a, &di) && di.dli_sname) fprintf(stderr, " %s%s%s+%#lx", tag, *tag ? "=" : "", di.dli_sname, (unsigned long)(a - (uint64_t)di.dli_saddr));
+    else if (di.dli_fname && di.dli_fbase) {
+        const char *name = strrchr(di.dli_fname, '/'); name = name ? name + 1 : di.dli_fname;
+        fprintf(stderr, " %s%s%s+%#llx", tag, *tag ? "=" : "", name, (unsigned long long)(a - (uint64_t)di.dli_fbase));
+    }
     else fprintf(stderr, " %s%s%#llx", tag, *tag ? "=" : "", a);
 }
 // Frame pointer backtrace: x29 chain [fp]=previous frame's fp, [fp+8]=return address; only 8-byte aligned, monotonically increasing frames are walked.

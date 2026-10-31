@@ -419,3 +419,42 @@ The Android front end rotates log.txt to log.prev.txt on launch. The collector
 now includes that previous log, which was omitted initially. Retrieve it before
 another launch overwrites it. No runtime crash fix is justified until the
 faulting address/thread or equivalent evidence is available.
+
+## Previous-run crash: Turnip KGSL submission error cleanup
+
+The supplied mk8-previous-log.txt contains `CRASH sig=11 addr=0x28`,
+PC/LR 0x6d99e7ddc0, and x23=0. The retained revision 9v2 Turnip ELF has a
+static symbol table. Testing page-aligned load bases against the five recorded
+driver return addresses found one base with call instructions at all five
+return sites: 0x6d99886000. At this base the backtrace resolves to:
+
+- PC +0x5f7dc0: kgsl_queue_submit
+- +0x61633c: vk_queue_submit_final
+- +0x60e9c8: vk_device_flush
+- +0x617408: vk_queue_submit
+- +0x61681c: vk_common_QueueSubmit2
+- +0x61eb30: vk_common_QueueSubmit
+
+The faulting instruction is `ldr x8, [x23, #0x28]`, matching the null x23 and
+fault address exactly. Mesa source for the logged revision,
+[tu_knl_kgsl.cc at 4497ea2a31](https://github.com/chaotic-cx/mesa-mirror/blob/4497ea2a31/src/freedreno/vulkan/tu_knl_kgsl.cc),
+contains an unconditional dereference of optional u_trace_submission_data in
+fail_submit cleanup after a failed GPU_COMMAND ioctl. The disassembled binary
+likewise calls device-set-lost before entering this cleanup. This is strong
+evidence for a secondary driver cleanup fault after submission failure, not
+proof of the submission's original cause (driver issue, invalid GPU work,
+resource failure, etc.). It does not establish a compilation-thread crash or
+that the runtime's submitted work was valid.
+
+The game log does not contain Mesa's original submission error. collect_crash.py
+now uses the package-specific exit history to select the failed status-139 PID
+and retrieve its normal Android log messages as android-failed-process.txt.
+Retained Android logs may have expired. It still does not alter settings or
+caches. crash_off now includes native library name/base-relative offsets even
+when dladdr has no symbol name; the existing symbol and raw-address fallbacks
+are preserved and regression-tested. This formatter change requires a host
+rebuild for future logs; the collector update does not.
+
+No driver-binary patch is applied: avoiding the cleanup dereference alone would
+not repair failed GPU work. No claim that this explains the antigravity shadow
+issue follows from this crash analysis.

@@ -3,6 +3,7 @@
 import argparse
 from datetime import datetime, timezone
 import json
+import re
 from pathlib import Path
 import subprocess
 import zipfile
@@ -32,6 +33,22 @@ def main():
         result = subprocess.run(adb+command, capture_output=True, timeout=30)
         (out/name).write_bytes(result.stdout)
         status[name] = {'exit_code': result.returncode, 'stderr': result.stderr.decode(errors='replace')}
+    # Our signal handler exits itself, so Mesa's original submission error can
+    # be in the normal Android log rather than the native crash buffer.
+    exits = (out/'android-exits.txt').read_text(errors='replace')
+    for record in exits.split('ApplicationExitInfo #')[1:]:
+        if f'process={PACKAGE} ' not in record or 'status=139' not in record:
+            continue
+        pid = re.search(r'\bpid=(\d+)', record)
+        if pid:
+            name = 'android-failed-process.txt'
+            command = ['logcat', '-b', 'all', '-d', '-t', '4000', '--pid='+pid[1]]
+            result = subprocess.run(adb+command, capture_output=True, timeout=30)
+            (out/name).write_bytes(result.stdout)
+            status[name] = {'exit_code': result.returncode, 'pid': int(pid[1]),
+                            'stderr': result.stderr.decode(errors='replace')}
+            commands[name] = command
+        break
     (out/'collection.json').write_text(json.dumps(status, indent=2)+'\n')
     archive = out/'mk8-crash-diagnostics.zip'
     with zipfile.ZipFile(archive, 'x', zipfile.ZIP_DEFLATED) as z:
