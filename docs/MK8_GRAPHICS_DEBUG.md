@@ -37,7 +37,7 @@ measure the effect of this correction on the visible glitches.
 | Qualcomm system Vulkan | Implemented; current default | Baseline after the signed-decoder fix |
 | System Vulkan with `DM_VK_UBWC=0` | Existing environment switch | Compare image creation without the framebuffer compression optimizations; may cost performance |
 | System Vulkan with `DM_VK_X_NOBC=1` | Existing diagnostic switch | Reissue draw bindings to test the runtime's binding cache; may cost performance |
-| Mesa Turnip | Optional `--vulkan-driver ZIP` packaging and AdrenoTools loader | See TURNIP_TEST.md; phone rendering remains unverified |
+| Mesa Turnip | Optional `--vulkan-driver ZIP` packaging and AdrenoTools loader | User verified restored menus, Mario and Stadium on Android 15; see TURNIP_TEST.md |
 | OpenGL ES | No Android NVN backend implemented | A new backend, not a selectable setting |
 | Metal | Apple backend only | Cannot run on this Android phone |
 
@@ -199,3 +199,23 @@ The code validates driverID 18 after device enumeration, so a loader that
 silently falls back to Qualcomm cannot count as a successful Turnip trial.
 The helper libraries build for ARM64 and a real Turnip ZIP has been packaged
 into a signed test APK in the cloud; that packaging test is not device testing.
+
+
+## Successful Turnip device comparison (2026-10-31)
+
+The user reports that the game now works with the packaged revision 9v2 driver.
+The supplied mk8-turnip-log.txt confirms Mesa 24.3.0-devel (git-4497ea2a31),
+Vulkan 1.3.296 and driverID 18, with no `[RED]` entries. The Photos-1-001.zip
+screenshots show restored menus, character icons, Mario, vehicle parts and cup
+previews. The Stadium screenshot shows Mario, race HUD icons and no large
+coloured rectangles, with a 30 FPS counter. This is a short device test, not a
+sustained performance measurement or exhaustive game compatibility result.
+
+Working settings are `DM_VK_DRIVER=turnip` and `DM_VK_BC_DECODE=1`, with prior
+probes and copied-buffer experiments disabled. The comparison also disabled
+pipeline caching via `DM_VK_NOPCACHE=1`; this can be removed after saving the
+working configuration. Keep CPU BC decoding enabled for the runtime's generated
+BC texture shadow path. See [TURNIP_TEST.md](TURNIP_TEST.md) for the exact
+package and setup. The evidence establishes a driver-dependent workaround,
+not the precise internal cause of the Qualcomm failures. User captures remain
+outside the repository.
