@@ -72,3 +72,28 @@ can be shared across characters; this does not identify the selected driver.
 The user's Mario is absent both in selection and in races, so Mii placeholder
 heads do not account for this symptom. Shader inspection is needed before
 attributing the missing models to bone transforms, vertex inputs or fragments.
+
+## Integer vertex register inputs
+
+The supplied shader ZIP confirms a Vulkan input mismatch in driver-model draws.
+For example `45539f60801ff5e3` declares location 6 as float4, but the recorded
+pipeline supplies NVN RGBA8_UINT / Vulkan R8G8B8A8_UINT there. The shader loads
+components, bitcasts them to integer bone indices, and multiplies by 48 to
+address its bone matrices. Vulkan requires integer fetch formats to feed
+integer shader inputs. Maxwell exposes the integer values as register bits,
+which this shader expects to reinterpret, not numerically convert to floats.
+
+The runtime now selects vertex shader variants by the unsigned/signed integer
+fetch locations of float-declared inputs. The variants retype those inputs and
+bitcast loads back to the original shader values, preserving its math and
+matrix indexing. Normalized and half-float attributes retain their original
+path. Pipeline/shader caches include the input masks; the pipeline record
+version changes to discard incompatible prewarm records. No shader translation
+rerun or bundle change is required, but the Android host/APK must be rebuilt.
+Logs identify variants with `integer vertex register inputs`.
+
+Fifteen affected combinations from the supplied trace and translated shaders
+passed SPIR-V validation after conversion. Synthetic signed/unsigned vector and
+component-load cases and variant/cache routing are regression-tested. Rendering
+on the phone remains to be verified; this is not evidence that every missing
+icon or post-processing artifact has the same cause.

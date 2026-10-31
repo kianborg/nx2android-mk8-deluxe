@@ -23,12 +23,14 @@ class UintOutputs(unittest.TestCase):
         source = (ROOT/'nxnative/dm/android/gfx_vk_shader.c').read_text()
         source = source[source.index('typedef struct { const uint32_t *w;'):source.index('// A variant of a fragment shader that writes gl_FragDepth')]
         wrapper = cls.folder/'variant.c'
-        wrapper.write_text('#include <stdint.h>\n#include <stdlib.h>\n#include <string.h>\n'+source+'\nuint32_t *transform(const uint32_t *w,uint32_t n,uint32_t *o){return spv_uint_outputs(w,n,o);}\n')
+        wrapper.write_text('#include <stdint.h>\n#include <stdlib.h>\n#include <string.h>\n'+source+'\nuint32_t *transform(const uint32_t *w,uint32_t n,uint32_t *o){return spv_uint_outputs(w,n,o);}\nuint32_t *transform_inputs(const uint32_t *w,uint32_t n,uint32_t *o,uint32_t vin){return spv_vertex_inputs(w,n,o,vin);}\n')
         lib = cls.folder/'variant.so'
         subprocess.run(['cc','-shared','-fPIC',str(wrapper),'-o',str(lib)],check=True)
         cls.lib = C.CDLL(str(lib))
         cls.lib.transform.argtypes = [C.POINTER(C.c_uint32),C.c_uint32,C.POINTER(C.c_uint32)]
         cls.lib.transform.restype = C.POINTER(C.c_uint32)
+        cls.lib.transform_inputs.argtypes = cls.lib.transform.argtypes+[C.c_uint32]
+        cls.lib.transform_inputs.restype = cls.lib.transform.restype
         cls.free = C.CDLL(None).free
         cls.free.argtypes = [C.c_void_p]
 
@@ -69,3 +71,23 @@ class UintOutputs(unittest.TestCase):
     def test_existing_uint_and_signed_outputs(self):
         self.check_shader('layout(location=0) out uvec4 c;', 'c=uvec4(0xffffffffu);')
         self.check_shader('layout(location=0) out ivec4 c;', 'c=ivec4(-1);')
+
+    def test_vertex_integer_fetch_loads_preserve_register_bits(self):
+        for component in (False, True):
+            source = self.folder/'input.vert'
+            source.write_text('#version 450\nlayout(location=0) in vec4 p; layout(location=1) in vec4 bones; layout(location=2) in vec4 signedBits; void main(){gl_Position=p+vec4(floatBitsToUint(bones'+('.x' if component else '')+'))+vec4(floatBitsToInt(signedBits));}')
+            binary = self.folder/'vertex.spv'
+            subprocess.run([str(self.tools/'glslc'),str(source),'-o',str(binary)],check=True)
+            data=binary.read_bytes(); words=(C.c_uint32*(len(data)//4)).from_buffer_copy(data); n=C.c_uint32()
+            ptr=self.lib.transform_inputs(words,len(words),C.byref(n),(1<<1)|(1<<18))
+            self.assertTrue(ptr)
+            try: result=C.string_at(ptr,n.value*4)
+            finally: self.free(ptr)
+            binary.write_bytes(result)
+            check=subprocess.run([str(self.tools/'spirv-val'),'--target-env','vulkan1.0',str(binary)],capture_output=True,text=True)
+            self.assertEqual(check.returncode,0,check.stderr)
+            dis=subprocess.check_output([str(self.tools/'spirv-dis'),str(binary)],text=True)
+            self.assertIn('OpTypePointer Input %v4uint',dis)
+            self.assertIn('OpTypePointer Input %v4int',dis)
+            self.assertIn('OpBitcast %v4float',dis)
+            if component: self.assertIn('OpBitcast %float',dis)

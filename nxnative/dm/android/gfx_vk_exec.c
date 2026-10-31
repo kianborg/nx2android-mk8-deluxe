@@ -648,6 +648,19 @@ static void clear_ds(const p_clear_ds *c) {
 }
 
 // ---------------- formats and enums ----------------
+// Scalar category of the actual fetch format (including vertex-only RGB formats).
+static int vertex_integer_kind(VkFormat f) {
+    switch (f) {
+#define VI(B) case VK_FORMAT_##B##_UINT: return 1; case VK_FORMAT_##B##_SINT: return 2;
+    VI(R8) VI(R8G8) VI(R8G8B8) VI(R8G8B8A8)
+    VI(R16) VI(R16G16) VI(R16G16B16) VI(R16G16B16A16)
+    VI(R32) VI(R32G32) VI(R32G32B32) VI(R32G32B32A32)
+    case VK_FORMAT_A2B10G10R10_UINT_PACK32: return 1;
+    case VK_FORMAT_A2B10G10R10_SINT_PACK32: return 2;
+#undef VI
+    default: return 0;
+    }
+}
 static VkFormat vertex_format(int f, int want_int, int want_sint) {
     static const uint16_t rgb[] = {VK_FORMAT_R8G8B8_UNORM, VK_FORMAT_R8G8B8_SNORM, VK_FORMAT_R8G8B8_UINT, VK_FORMAT_R8G8B8_SINT, VK_FORMAT_R16G16B16_SFLOAT, VK_FORMAT_R16G16B16_UNORM,
         VK_FORMAT_R16G16B16_SNORM, VK_FORMAT_R16G16B16_UINT, VK_FORMAT_R16G16B16_SINT, VK_FORMAT_R32G32B32_SFLOAT, VK_FORMAT_R32G32B32_UINT, VK_FORMAT_R32G32B32_SINT};
@@ -730,7 +743,7 @@ typedef struct {
     uint32_t nbind; struct { uint32_t binding, stride, rate, divisor; } bind[17];
     uint32_t ncol, cfmt[8], dfmt, samples, a2c, blend_en, logic_en, logic_op, wmask[8];
     struct { uint32_t src, dst, srca, dsta, eq, eqa; } bl[8];
-    uint32_t clip_neg1, alt, fdz, dual, uint_outputs;   // fdz: the fragment shader's variant that writes gl_FragDepth = gl_FragCoord.z (fdz below); dual: its dual-source variant (below)
+    uint32_t clip_neg1, alt, fdz, dual, uint_outputs, vin;   // fdz: the fragment shader's variant that writes gl_FragDepth = gl_FragCoord.z (fdz below); dual: its dual-source variant (below)
     uint64_t um[3], im[3];   // each stage's sampled bindings given integer views (vk_shader_module)
 } pkey;
 static nvn_hmap g_pipes = {.klen = sizeof(pkey)}; static pthread_mutex_t g_pipe_mu = PTHREAD_MUTEX_INITIALIZER;   // the replay thread and the prewarm threads
@@ -754,7 +767,7 @@ static VkPipeline graphics_pipeline(const pkey *k, VkPipelineLayout layout) {
 // ---- pipeline prewarm: every pipeline the game needed is recorded (DM_ROOT/vk_pipelines.bin) and made again at the next boot on background
 // threads, before the game reaches it, so a scene seen once never stalls a frame on a pipeline compile again (the driver's compile, not the
 // pipeline cache's lookup, is the cost: tens of milliseconds per pipeline on Adreno). DM_VK_NOPREWARM=1 turns it off.
-#define PIPE_MAGIC 0x31455050u   // "PPE1"; the header also holds sizeof(pkey), so a changed key layout starts a new file
+#define PIPE_MAGIC 0x32455050u   // "PPE2": integer vertex input variants; old keys can have the same padded size
 static FILE *g_prec;
 static void pipe_record(const pkey *k) {   // under g_pipe_mu
     if (!g_prec || k->alt) return;   // DM_VK_SPV_ALT's pipelines are a debugging run's own
@@ -813,8 +826,8 @@ static VkPipeline build_pipeline(const pkey *k, VkPipelineLayout layout, vkshade
     for (int i = 0; i < 3; i++) if (stg[i] && !(i == 1 && k->raster_discard)) {
         int remap = k->clip_neg1 && !V.has_depth_clip_ctl && i == (stg[2] ? 2 : 0) && !k->raster_discard;
         ss[ns++] = (VkPipelineShaderStageCreateInfo){VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_CREATE_INFO, NULL, 0, fl[i],
-            vk_shader_module(stg[i], k->um[i], k->im[i], k->alt && !remap && !k->um[i] && !k->im[i] && !xo[i] ? 1u << 31 : xo[i],
-                             (i == 1 ? (k->fdz ? VK_SHADER_FRAG_DEPTH : 0) | (k->dual ? VK_SHADER_DUAL_SOURCE : 0) | (k->uint_outputs ? VK_SHADER_UINT_OUTPUT : 0) : 0) | (remap ? VK_SHADER_CLIP_DEPTH : 0)), "main", NULL};
+            vk_shader_module(stg[i], k->um[i], k->im[i], k->alt && !remap && !k->vin && !k->um[i] && !k->im[i] && !xo[i] ? 1u << 31 : xo[i],
+                             (i == 1 ? (k->fdz ? VK_SHADER_FRAG_DEPTH : 0) | (k->dual ? VK_SHADER_DUAL_SOURCE : 0) | (k->uint_outputs ? VK_SHADER_UINT_OUTPUT : 0) : 0) | (remap ? VK_SHADER_CLIP_DEPTH : 0), i == 0 ? k->vin : 0), "main", NULL};
     }
     VkVertexInputAttributeDescription ad[16]; VkVertexInputBindingDescription bd[17]; VkVertexInputBindingDivisorDescriptionEXT dd[17]; uint32_t ndd = 0;
     for (uint32_t i = 0; i < k->nattr; i++) ad[i] = (VkVertexInputAttributeDescription){k->attr[i].loc, k->attr[i].binding, (VkFormat)k->attr[i].fmt, k->attr[i].off};
@@ -1252,6 +1265,10 @@ static int prepare_draw(int prim, int indexed) {
         va_st a; memcpy(&a, &S.vattr[loc], 4);
         VkFormat f = a.fmt ? vertex_format(a.fmt, int_mask >> loc & 1, sint_mask >> loc & 1) : VK_FORMAT_UNDEFINED;
         if (f == VK_FORMAT_UNDEFINED || !S.vbuf[a.stream].address) { k.attr[k.nattr++] = (typeof(k.attr[0])){(uint32_t)loc, 16, int_mask >> loc & 1 ? VK_FORMAT_R32G32B32A32_UINT : VK_FORMAT_R32G32B32A32_SFLOAT, 0}; need_zero = 1; continue; }
+        if (!(int_mask >> loc & 1)) {
+            int kind = vertex_integer_kind(f);
+            if (kind) k.vin |= 1u << (loc + (kind == 2 ? 16 : 0));
+        }
         k.attr[k.nattr++] = (typeof(k.attr[0])){(uint32_t)loc, a.stream, f, a.offset};
         used_streams |= 1u << a.stream;
     }
@@ -1532,7 +1549,7 @@ static void dispatch(const p_dispatch *d) {
     uint64_t ck[3] = {cs->key, g_num_um, g_num_im};
     VkPipeline p = nvn_hm_get(&g_cpipes, ck);
     if (!p) {
-        VkComputePipelineCreateInfo ci = {VK_STRUCTURE_TYPE_COMPUTE_PIPELINE_CREATE_INFO, NULL, 0, {VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_CREATE_INFO, NULL, 0, VK_SHADER_STAGE_COMPUTE_BIT, vk_shader_module(cs, ck[1], ck[2], 0, 0), "main", NULL}, layout, VK_NULL_HANDLE, -1};
+        VkComputePipelineCreateInfo ci = {VK_STRUCTURE_TYPE_COMPUTE_PIPELINE_CREATE_INFO, NULL, 0, {VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_CREATE_INFO, NULL, 0, VK_SHADER_STAGE_COMPUTE_BIT, vk_shader_module(cs, ck[1], ck[2], 0, 0, 0), "main", NULL}, layout, VK_NULL_HANDLE, -1};
         if (vkCreateComputePipelines(V.dev, V.pcache, 1, &ci, NULL, &p)) { LOG("[RED] [vk] compute pipeline failed: %016llx", (unsigned long long)cs->key); p = (VkPipeline)1; }
         nvn_hm_put(&g_cpipes, ck, p);
     }
