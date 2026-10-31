@@ -285,3 +285,41 @@ Trials frame on Stadium's affected banked section, with pass images, a draw
 trace and depth values. [MK8_SHADOW_CAPTURE.md](MK8_SHADOW_CAPTURE.md) describes
 the release-APK capture. No shadow-state, shader or texture workaround is yet
 justified by the menu-only trace.
+
+## Antigravity capture at present 9000
+
+The supplied mk8-shadows-diagnostics.zip contains the affected banked Stadium
+view at presents 9000 and 9002, 67 completed pass images from present 9000,
+and numeric depth sidecars. There are no `[RED]` entries. Shadow-depth passes
+4 and 5 (pass_05/06.ppm) contain a recognizable kart/driver silhouette; this
+confirms generation, not correctness of every depth value or later lookup.
+
+Pass 16 writes an RGBA8 lighting/shadow mask at pool offset 0x6f0600, using
+fragment 6aa6c36ed6065b7d and a two-layer D16 comparison texture. Pass 17 adds
+projected masks with fragment shaders be891424dfb3f8e0 and eda8130f8a9a7634.
+The latter draws multiply only red by one-minus-source-alpha. Cyan pixels in
+this intermediate image are not by themselves corruption: its channels carry
+separate mask data. Pass 18 samples this mask and renders the scene; the
+unwanted cyan silhouette is already visible in pass_26.ppm, before bloom or
+presentation. The supplied shader-map origins identify these as common AGL
+shadow/projection shaders. Exact shader execution and sampling still need
+inspection before choosing a runtime fix.
+
+The capture contains shader keys, not the shader programs themselves. With
+the same APK/data pack installed and the phone connected, retrieve just the
+trace's shader entries without replaying the race or pulling the full 671 MB
+bundle:
+
+```bash
+python3 devtools/extract_device_shaders.py \
+  --trace work/mk8-shadows-capture-2/log.txt \
+  --output work/mk8-shadow-shaders.zip
+```
+
+The extractor reads the header/table and block-aligned ranges through ADB,
+validates bounds and writes only selected SPIR-V/reflection entries plus a
+manifest. It does not change env.txt or require the game to be running. Local
+sparse staging preserves bundle offsets for the existing validated extractor.
+Tests cover entry bounds, duplicate keys and a mocked ADB-to-ZIP extraction.
+Send the resulting ZIP for the next shader analysis. This is diagnostic data,
+not a shadow workaround.
