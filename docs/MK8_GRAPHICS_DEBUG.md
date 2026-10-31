@@ -573,3 +573,13 @@ validated general semantic fix and a plausible shadow-related candidate, not
 a confirmed resolution of the phone's cyan silhouette. Rebuild/reinstall with
 the same Turnip ZIP/signing key and check the affected race normally first;
 no additional six-minute diagnostic capture is requested yet.
+
+## Device confirmation: shadow fixed; antigravity wheel flicker remains
+
+The user confirms that the texture-view swizzle correction (18886dd) fixes the
+cyan shadow problem on the phone. They now report minor flicker around the
+wheels in antigravity. That temporal issue has not yet been captured or assigned
+to a particular draw. A short recording with a stationary kart/camera should
+first distinguish wheel geometry, cyan glow, road reflections and overlapping
+transparent effects. Keep the confirmed Turnip/CPU BC and swizzle fixes; do not
+apply a new depth, blend or driver workaround without that evidence.
