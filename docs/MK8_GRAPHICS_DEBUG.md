@@ -275,3 +275,13 @@ confirmation remains pending: rebuild the host/APK with the same Turnip ZIP
 and signing key, retain the working env.txt and compare cup selection. Shader
 regeneration is unnecessary. The antigravity shadow appearance is not yet
 explained by this capture or confirmed fixed by the format correction.
+
+## RGB565 device confirmation and remaining shadow investigation
+
+The user confirmed that the corrected build fixes the cup-selection colours.
+The antigravity shadow issue remains on that same build, so correcting the
+RGB565 mappings did not resolve it. The next evidence is a stationary Time
+Trials frame on Stadium's affected banked section, with pass images, a draw
+trace and depth values. [MK8_SHADOW_CAPTURE.md](MK8_SHADOW_CAPTURE.md) describes
+the release-APK capture. No shadow-state, shader or texture workaround is yet
+justified by the menu-only trace.

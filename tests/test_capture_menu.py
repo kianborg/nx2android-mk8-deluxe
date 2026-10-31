@@ -31,3 +31,13 @@ class MenuCaptureTests(unittest.TestCase):
                     "pass dump 00: 1280x720 format 37 → /files/pass_00.ppm"):
             with self.subTest(log=log), self.assertRaises(ValueError):
                 capture.pass_files(log, 6000)
+
+
+    def test_collects_numeric_depth_only_for_completed_capture_indices(self):
+        log = ("frame trace begins at present 9000\n"
+               "pass dump 01 is the submission's pass 4 (present 9000)\n"
+               "pass dump 01: depth 1536x1536 format 124, values 0 .. 1 → /files/pass_01.ppm\n"
+               "pass dump 02 is the submission's pass 5 (present 9000)\n"
+               "pass dump 02: 1280x720 format 37 → /files/pass_02.ppm\n")
+        self.assertEqual(capture.pass_files(log, 9000),
+                         ['pass_01.ppm', 'pass_02.ppm', 'pass_01.ppm.f32'])

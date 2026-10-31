@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Schedule a bounded release-APK menu capture, collect it, and restore env.txt."""
+"""Schedule a bounded release-APK graphics capture, collect it, and restore env.txt."""
 import argparse
 import hashlib
 import json
@@ -26,7 +26,7 @@ def capture_env(original, frame):
 def pass_files(log, frame):
     records = re.findall(r'pass dump (\d+) is the submission\'s pass (\d+) \(present (\d+)\)', log)
     if not records or not any(int(present) >= frame for _, _, present in records):
-        raise ValueError('Capture has not reached the scheduled frame; leave the menu open and retry collect.')
+        raise ValueError('Capture has not reached the scheduled frame; keep the affected scene visible and retry collect.')
     if any(not frame <= int(present) <= frame+8 for _, _, present in records):
         raise ValueError('Dump presents do not match this capture; keep log.txt for inspection.')
     completed = {int(i) for i in re.findall(r'pass dump (\d+): .* → ', log)}
@@ -35,17 +35,25 @@ def pass_files(log, frame):
         raise ValueError('Pass files are still being written; retry collect shortly.')
     if 'frame trace begins at present ' not in log:
         raise ValueError('No frame trace found; keep the log for inspection.')
-    return [f'pass_{i:02d}.ppm' for i in sorted(indices)]
+    files = [f'pass_{i:02d}.ppm' for i in sorted(indices)]
+    depths = {int(i) for i in re.findall(r'pass dump (\d+): depth ', log)}
+    files += [f'pass_{i:02d}.ppm.f32' for i in sorted(indices & depths)]
+    return files
 
 
 def main():
     ap = argparse.ArgumentParser(description=__doc__)
     ap.add_argument('action', choices=['start', 'collect', 'restore'])
-    ap.add_argument('--output', type=Path, default=Path('work/mk8-menu-capture'))
-    ap.add_argument('--frame', type=int, default=6000)
+    ap.add_argument('--scene', choices=['menu', 'shadows'], default='menu')
+    ap.add_argument('--output', type=Path)
+    ap.add_argument('--frame', type=int, help='capture present (default: menu 6000, shadows 9000)')
     ap.add_argument('--adb', default='adb')
     ap.add_argument('--serial')
     args = ap.parse_args()
+    if args.frame is None:
+        args.frame = 9000 if args.scene == 'shadows' else 6000
+    if args.output is None:
+        args.output = Path(f'work/mk8-{args.scene}-capture')
     if args.frame < 300:
         ap.error('--frame must be at least 300')
     adb = [args.adb] + (['-s', args.serial] if args.serial else [])
@@ -77,13 +85,19 @@ def main():
         (out/'capture-env.txt').write_bytes(settings)
         before = shell('cat', root+'/log.txt')
         (out/'capture.json').write_text(json.dumps({'frame': args.frame,
-            'previous_log_sha256': hashlib.sha256(before).hexdigest()}, indent=2)+'\n')
+            'scene': args.scene, 'previous_log_sha256': hashlib.sha256(before).hexdigest()}, indent=2)+'\n')
         shell('am', 'force-stop', PACKAGE)
         run('push', str(out/'capture-env.txt'), root+'/env.txt')
         print(f'Capture armed for present {args.frame}. Open the game manually now.')
-        print('Go directly to cup selection, select Mushroom Cup and leave that screen open.')
-        print('At 40 FPS the default delay is about 2.5 minutes; at 30 FPS about 3.3 minutes.')
-        print('After about four minutes run collect. If it is not ready, collect will say so.')
+        if args.scene == 'shadows':
+            print('Choose Time Trials, Mario Kart Stadium. Drive onto the banked antigravity section.')
+            print('Stop where the cyan shadow is visible; keep the race view open without pausing.')
+            print('The default delay is 5 minutes at 30 FPS, 3.75 minutes at 40 FPS.')
+            print('After about six minutes run collect --scene shadows; retry if it is not ready.')
+        else:
+            print('Go directly to cup selection, select Mushroom Cup and leave that screen open.')
+            print('At 40 FPS the default delay is about 2.5 minutes; at 30 FPS about 3.3 minutes.')
+            print('After about four minutes run collect. If it is not ready, collect will say so.')
     elif args.action == 'restore':
         restore()
     else:
@@ -100,7 +114,7 @@ def main():
             run('pull', root+'/'+name, str(out/name))
             files.append(name)
         (out/'screen.png').write_bytes(run('exec-out', 'screencap', '-p'))
-        archive_path = out/'mk8-menu-diagnostics.zip'
+        archive_path = out/f"mk8-{meta.get('scene', 'menu')}-diagnostics.zip"
         with zipfile.ZipFile(archive_path, 'x', zipfile.ZIP_DEFLATED) as z:
             for name in files+['log.txt', 'screen.png', 'capture.json', 'capture-env.txt']:
                 z.write(out/name, name)
