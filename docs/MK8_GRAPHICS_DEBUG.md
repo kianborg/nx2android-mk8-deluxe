@@ -51,3 +51,24 @@ Then test only `DM_VK_UBWC=0`, restart the app, and compare again. Restore it
 before separately testing `DM_VK_X_NOBC=1`. Keep the original env.txt and label
 each run's log and screenshot. Do not combine switches until their individual
 effects are known. These are diagnostic paths, not established fixes.
+
+## Extract translated shaders for inspection
+
+`devtools/extract_graphics_shaders.py` reads shader keys from traced draw lines
+and writes just their SPIR-V, binary reflection and a manifest into a ZIP. It
+uses a memory mapping rather than loading the whole bundle into Python memory,
+checks bundle entry bounds and refuses to overwrite an existing ZIP. It does
+not modify the bundle. Prefer the bundle from the same port as the trace;
+missing keys are listed explicitly when a different port is used.
+
+```bash
+python3 devtools/extract_graphics_shaders.py shaders.dmsv \
+    --trace mk8-late-capture/log.txt --output mk8-shader-diagnostics.zip
+```
+
+The earlier race trace includes driver-model draw calls (for example vertex
+shader `45539f60801ff5e3`, first found in Luigi.szs). Driver-specific shaders
+can be shared across characters; this does not identify the selected driver.
+The user's Mario is absent both in selection and in races, so Mii placeholder
+heads do not account for this symptom. Shader inspection is needed before
+attributing the missing models to bone transforms, vertex inputs or fragments.
