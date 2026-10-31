@@ -16,9 +16,9 @@
 # occlusion reports (agl, Cap Kingdom); evaluating them from real occlusion counts, or skipping them, changed nothing visible (2026-10-31), so render_cond stays off.
 # Issue #42 (2026-10-31/11-01, Y700, Cap Kingdom at the wake-up field and the hat tower): the moon's glow flashed for single frames while the camera turned (3-10 of
 # 780 frames): the bloom's first pass bound a sampler ID the game registered again before submitting (core: samplers as bound, DM_NVN_SAMP_SNAP), 0 in 2,300 frames
-# since. agl's full-screen passes draw past their vertex streams (core: DM_VK_VBOUND). Open: the ground fog clears around a standing Mario and only slowly around a
-# walking one (on the Switch it opens at once around a moving Mario and closes when he stops); the fluid simulation and the fog draw run as the game asks, but the
-# game's own splat data has a fixed push direction (-1, -0.7) whatever Mario does, and its slow field gets (-3, -2.1) every frame. The host input behind it is not found.
+# since. agl's full-screen passes draw past their vertex streams (core: DM_VK_VBOUND). The ground fog parted around a standing Mario and only slowly around a walking
+# one: its wave surface (al::FluidSimulateWave) ends in linear render targets (128x128 RGBA16F, 256x128 R32F) that the game's CPU reads from memory, and the host
+# left what the GPU drew in the Vulkan images (core: copied back, DM_VK_LIN_BACK). Checked by the user on the tablet 2026-11-01: the fog clears around Mario on contact.
 status	playable
 tested	v393216 Lenovo Legion Y700 TB322FC (Snapdragon 8 Elite, Adreno 830, Android 16)
 package	org.nx2a.supermarioodyssey
