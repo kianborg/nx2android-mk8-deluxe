@@ -19,6 +19,9 @@ class BCUpload(unittest.TestCase):
         formats = source[source.index('enum { K_NONE'):source.index('static VkImageAspectFlags aspect_of')]
         start = source.index('static void pkg_upload_(vkimg_t *im, const tex_t *t, const vkfmt_t *f) {')
         upload = source[start:source.index('\nstatic int packaged_tex', start)]
+        executor = (DM / 'android/gfx_vk_exec.c').read_text()
+        start = executor.index('static int pipeline_target_needs_readback(')
+        readback = executor[start:executor.index('static int async_pipe(', start)]
         code = r'''
 #define _GNU_SOURCE
 #include <vulkan/vulkan_core.h>
@@ -37,7 +40,7 @@ class BCUpload(unittest.TestCase):
 static void die(const char *f, ...) { va_list a; va_start(a, f); vfprintf(stderr, f, a); va_end(a); abort(); }
 static struct { int has_bc, has_astc; VkPhysicalDevice pd; } V;
 typedef struct { uint64_t serial; nvn_texdesc d; nvn_texlayout L; const uint8_t *mem; } tex_t;
-''' + fmt + image + formats + r'''
+''' + fmt + image + formats + readback + r'''
 void vkGetPhysicalDeviceFormatProperties(VkPhysicalDevice p, VkFormat f, VkFormatProperties *o) { (void)p; (void)f; memset(o, 0, sizeof *o); }
 static unsigned calls, layer, level, test_linear, uploads; static uint8_t expected[32][8];
 static void *scratch; static size_t scratch_size;
@@ -75,6 +78,12 @@ static unsigned sample565(int nvn, unsigned word) {
 }
 int main(void) {
     V.has_bc = 1; V.has_astc = 1;
+    tex_t readback_target = {.d={.format=0x25}};
+    assert(!pipeline_target_needs_readback(&readback_target));
+    readback_target.d.flags = NVN_TEXTURE_FLAGS_LINEAR_RENDER_TARGET;
+    assert(pipeline_target_needs_readback(&readback_target));
+    readback_target.d.flags = 0; readback_target.d.format = 0x44;
+    assert(!pipeline_target_needs_readback(&readback_target)); // native BC needs no CPU decode
     assert(sample565(0x3c, 0x001f) == 0xff0000); // red
     assert(sample565(0x3c, 0x07ff) == 0xffff00); // yellow, not cyan
     assert(sample565(0x3c, 0xf800) == 0x0000ff); // blue
@@ -84,6 +93,7 @@ int main(void) {
     assert(sample565(0x95, 0x001f) == 0x0000ff);
     for (int f = 0x41; f <= 0x50; f++) { const vkfmt_t *v = vk_fmt(f); assert(v && !v->bc_decode && v->compressed && v->bw == 4 && v->bh == 4); }
     reset(); V.has_bc = 0;
+    assert(pipeline_target_needs_readback(&readback_target)); // generated BC must not be skipped
     for (int f = 0x41; f <= 0x50; f++) { const vkfmt_t *v = vk_fmt(f); assert(v && v->bc_decode && !v->compressed && v->bw == 4 && v->bh == 4); assert(v->bpb == nvn_bc_block_size(f)); }
     assert(vk_fmt(0x49)->vk == VK_FORMAT_R8_UNORM && vk_fmt(0x4a)->vk == VK_FORMAT_R8_SNORM);
     assert(vk_fmt(0x4b)->vk == VK_FORMAT_R8G8_UNORM && vk_fmt(0x4c)->vk == VK_FORMAT_R8G8_SNORM);

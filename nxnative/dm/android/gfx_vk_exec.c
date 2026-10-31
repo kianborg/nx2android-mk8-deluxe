@@ -844,9 +844,16 @@ static void *async_pipe_thread(void *arg) {
     }
     return NULL;
 }
+static int pipeline_target_needs_readback(const tex_t *t) {
+    if (t->d.flags & NVN_TEXTURE_FLAGS_LINEAR_RENDER_TARGET) return 1;
+    // Generated BC blocks are rendered through an integer shadow and decoded
+    // on the CPU after the pass. A skipped draw would decode incomplete data.
+    const vkfmt_t *f = vk_fmt(t->d.format);
+    return f && f->bc_decode;
+}
 static int async_pipe(const pkey *k) {   // 1: queued (the draw is left out); under nothing (takes g_pipe_mu)
     if (!g_async_pipe || k->raster_discard || (S.sh[0] && S.sh[0]->xfb)) return 0;
-    for (int i = 0; i < S.ncol && i < 8; i++) if (S.rt_has_col[i] && (S.rt_col[i].d.flags & NVN_TEXTURE_FLAGS_LINEAR_RENDER_TARGET)) return 0;   // (the CPU reads it: lin_back)
+    for (int i = 0; i < S.ncol && i < 8; i++) if (S.rt_has_col[i] && pipeline_target_needs_readback(&S.rt_col[i])) return 0;   // CPU readback: linear targets or generated BC blocks
     int natt = 0; for (int i = 0; i < 9; i++) { const vkimg_t *a = P_att[i].im; if (!a) continue; natt++; if (a->rt_frames < 3) {
             if (g_prof_on) { static int n; if (n++ < 300) VKLOG("pipeline built here: attachment %d %ux%u nvn format %#x drawn in %llu presents in a row (shaders %016llx %016llx)", i, a->w, a->h, a->nvn_format, (unsigned long long)a->rt_frames, (unsigned long long)k->key[0], (unsigned long long)k->key[1]); }
             return 0; } }   // (counted in this present too)

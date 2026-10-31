@@ -57,6 +57,14 @@ Use `start --scene shadows --frame 12000` if navigation needs more time.
 
 ## Controlled shadow-map comparison
 
+Result: the user's supplied map-off capture makes the road cyan across the
+view. The resolve draw is absent from the trace as requested, but its removal
+leaves no valid neutral replacement for the lighting mask. This comparison is
+inconclusive for the original silhouette; do not treat it as a workaround or
+repeat it as the next test. After syncing upstream, test the rebuilt APK with
+normal shadow rendering and the working Turnip/CPU BC settings restored.
+
+
 The captured shadow shaders validate as Vulkan 1.1 SPIR-V. The projected decal
 fragment shaders write zero RGB and compute opacity in alpha. Their recorded
 ZERO / ONE_MINUS_SRC_ALPHA blend is consistent with darkening a channel mask.

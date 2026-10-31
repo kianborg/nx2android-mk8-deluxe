@@ -342,3 +342,37 @@ shader through existing runtime skip support, without repacking the APK. See
 This is an A/B diagnostic, not a shipped shadow fix. Keep the RGB565 fix and
 working Turnip/CPU BC settings throughout, restoring the diagnostic switch
 after collection.
+
+
+## Map-off result and upstream sync
+
+The supplied mk8-shadows-map-off-diagnostics.zip records the map-off setting and
+omits the targeted resolve draw. The scheduled image shows a broadly cyan road,
+so this experiment cannot isolate the original silhouette visually. Removing
+the draw does not supply a neutral lighting mask. No conclusion that the
+shadow-map resolve itself is defective follows from this result.
+
+Upstream was synced through 0d0468dd2ec1872700ece91fc8aba7c43b350825:
+
+- 7402e8c snapshots sampler registrations as seen by each bind, preventing later
+  re-registration of a sampler ID from changing earlier recorded draws. It also
+  zero-pads direct vertex-stream reads past the bound size. Both are relevant
+  general rendering corrections, but neither is yet a verified MK8 shadow fix.
+- a318ff8 writes linear render targets back for CPU readers. It fixes a source
+  of stale CPU-visible simulation data in Odyssey; applicability to this MK8
+  scene has not been demonstrated.
+- 0d0468d builds eligible graphics and compute pipelines in the background and
+  moves pipeline-record writes off the replay lock. It may reduce compilation
+  stalls; gains on this phone remain unmeasured. The fork also exempts generated
+  BC targets from skipped first-use draws because their blocks are read back
+  and decoded on the CPU after the pass, like upstream's linear-target guard.
+- 60857c8 implements the vibration-device mounted query in the host.
+
+The merge preserves the packaged Turnip loader, forced BC decode, corrected
+RGB565 formats and shader variants for integer inputs/depth conversion. Conflict
+resolution retains upstream profiling and compute-pipeline race handling while
+keeping the fork's extended variant API and excluding diagnostic probe pipelines
+from persistent prewarm records. The regression suite passes 101 tests and the
+Android release build compiles 142 sources with zero failures. The next phone
+test should use this synced baseline with the map-off diagnostic removed; there
+is no justified additional shadow patch yet.
