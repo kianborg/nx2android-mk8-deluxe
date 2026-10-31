@@ -247,3 +247,31 @@ Compare each affected texture, its view swizzle/format and the first pass that
 introduces the wrong colours. Keep the working Turnip and CPU BC settings;
 do not apply a global red/blue swap or disable CPU BC decoding as a workaround.
 No runtime fix has yet been validated for these follow-up issues.
+
+## Cup-selection capture: reversed RGB565 channels
+
+The supplied mk8-menu-diagnostics.zip contains a complete frame-6000 trace and
+48 completed pass images, all logged at present 6000. Pass 38 (pass_45.ppm)
+still shows the patterned background without the cup UI. Pass 39
+(pass_46.ppm) adds the UI, including the cyan symbols. The incorrect colours
+are already present before pass 40 scales/presents the image (pass_47.ppm).
+The trace binds the twelve 200x200 cup colour textures as NVN RGB565 (0x3c),
+paired with separate BC4 masks. Their Vulkan images use format 4,
+R5G6B5_UNORM_PACK16. This isolates a format-table error rather than a global
+presentation colour adjustment or BC colour-decoder fault.
+
+NVN RGB565 stores red in the low five bits and blue in the high five bits.
+Vulkan's packed format names put the first component in the high bits, so the
+correct direct-storage mapping is B5G6R5_UNORM_PACK16 (format 5). The previous
+mapping swaps red and blue: yellow becomes cyan, red becomes blue and green
+is unchanged. NVN BGR565 (0x95) needs the inverse mapping; both entries are now
+corrected without shader or game-specific changes. The existing Metal format
+table independently handles NVN RGB565 with a red/blue remap.
+
+A regression exercises the actual Vulkan format selector with packed red,
+yellow, green and blue pixel values, including the inverse BGR565 layout. It
+fails with the previous table and passes with the corrected one. Device
+confirmation remains pending: rebuild the host/APK with the same Turnip ZIP
+and signing key, retain the working env.txt and compare cup selection. Shader
+regeneration is unnecessary. The antigravity shadow appearance is not yet
+explained by this capture or confirmed fixed by the format correction.

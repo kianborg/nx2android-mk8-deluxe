@@ -61,8 +61,27 @@ void vkCmdCopyBufferToImage(VkCommandBuffer cb, VkBuffer b, VkImage im, VkImageL
 }
 ''' + upload + r'''
 static void reset(void) { memset(g_fmt, 0, sizeof g_fmt); memset(g_fmt_done, 0, sizeof g_fmt_done); }
+// Decode the selected Vulkan packed format by Vulkan's bit layout, not its
+// spelling in NVN. NVN RGB565 stores R in bits 0..4; Vulkan R5G6B5 stores R
+// in bits 11..15. This reproduces yellow cup icons turning cyan.
+static unsigned sample565(int nvn, unsigned word) {
+    const vkfmt_t *f = vk_fmt(nvn); assert(f && f->bpb == 2);
+    unsigned low = word & 31, high = word >> 11, green = (word >> 5) & 63;
+    unsigned red, blue;
+    if (f->vk == VK_FORMAT_B5G6R5_UNORM_PACK16) { red = low; blue = high; }
+    else { assert(f->vk == VK_FORMAT_R5G6B5_UNORM_PACK16); red = high; blue = low; }
+    assert(f->swz.r == VK_COMPONENT_SWIZZLE_IDENTITY && f->swz.b == VK_COMPONENT_SWIZZLE_IDENTITY);
+    return ((red * 255 / 31) << 16) | ((green * 255 / 63) << 8) | (blue * 255 / 31);
+}
 int main(void) {
     V.has_bc = 1; V.has_astc = 1;
+    assert(sample565(0x3c, 0x001f) == 0xff0000); // red
+    assert(sample565(0x3c, 0x07ff) == 0xffff00); // yellow, not cyan
+    assert(sample565(0x3c, 0xf800) == 0x0000ff); // blue
+    assert(sample565(0x3c, 0x07e0) == 0x00ff00); // green
+    assert(sample565(0x95, 0xf800) == 0xff0000); // BGR565 has the opposite layout
+    assert(sample565(0x95, 0xffe0) == 0xffff00);
+    assert(sample565(0x95, 0x001f) == 0x0000ff);
     for (int f = 0x41; f <= 0x50; f++) { const vkfmt_t *v = vk_fmt(f); assert(v && !v->bc_decode && v->compressed && v->bw == 4 && v->bh == 4); }
     reset(); V.has_bc = 0;
     for (int f = 0x41; f <= 0x50; f++) { const vkfmt_t *v = vk_fmt(f); assert(v && v->bc_decode && !v->compressed && v->bw == 4 && v->bh == 4); assert(v->bpb == nvn_bc_block_size(f)); }
