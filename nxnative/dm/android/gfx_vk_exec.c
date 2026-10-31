@@ -61,6 +61,7 @@ static int32_t g_pass_bb[4];   // bounding box of the scissors the open pass's d
 static int g_cb_draws;   // draws in the command buffer being recorded (vk_cmd_split after DM_VK_CB_DRAWS draws, 0 = never)
 static int g_psplit, g_psplit_depth, g_psplit_now, g_ord_parts, g_setsplit;   // DM_VK_PASS_SPLIT / _DEPTH (prepare_draw); g_psplit_now: the pass being begun goes on with the one just ended (begin_pass cuts before it);
                                                                     // g_ord_parts: ordinary DM_VK_CB_DRAWS cuts in this submission, kept to the old 15 (MAIN_CBS was 16): the extra parts are for pass splits
+static uint64_t g_probe_shader; static int g_probe_mode, g_probe_logged;
 static int g_var_now;   // the bisection's change for the draw being recorded (see g_bis_var)
 static int g_tracing;   // the draw being recorded is the one the bisection found (its descriptors are logged)
 // replay counters, printed by gfx_vk_present.c every 600 presents (draws done and skipped by reason, passes, clears folded into load ops, dispatches)
@@ -128,6 +129,11 @@ static void x_read(void) { const char *c = getenv("DM_VK_CB_DRAWS"); g_x_cbdraws
     { const char *w = getenv("DM_VK_UBO_LOG"); static char last[40]; if (!w || !*w || !strcmp(w, "0")) g_ubolog_key = 0;
       else if (strcmp(w, last)) { g_ubolog_key = strtoull(w, NULL, 16); const char *h = strchr(w, '#'); g_ubolog_n = h ? atoi(h + 1) : 40; }
       snprintf(last, sizeof last, "%s", w ? w : ""); }
+    { const char *p=getenv("DM_VK_DRAW_PROBE"); char *end=NULL;
+      uint64_t key=p?strtoull(p,&end,16):0; int mode=end && *end==':'?atoi(end+1):0;
+      if (mode<1 || mode>3) {key=0;mode=0;}
+      if (key!=g_probe_shader || mode!=g_probe_mode) {g_probe_shader=key;g_probe_mode=mode;g_probe_logged=0;}
+    }
     if (g_x_traceframe_on) { g_x_traceframe_on = 0; setenv("DM_VK_TRACE_FRAME", "", 1); }   // one submission traced
     { const char *tf = getenv("DM_VK_TRACE_FRAME"), *at = getenv("DM_VK_TRACE_AT");
       uint64_t first = at ? strtoull(at, NULL, 10) : 0;
@@ -743,9 +749,15 @@ typedef struct {
     uint32_t nbind; struct { uint32_t binding, stride, rate, divisor; } bind[17];
     uint32_t ncol, cfmt[8], dfmt, samples, a2c, blend_en, logic_en, logic_op, wmask[8];
     struct { uint32_t src, dst, srca, dsta, eq, eqa; } bl[8];
-    uint32_t clip_neg1, alt, fdz, dual, uint_outputs, vin;   // fdz: the fragment shader's variant that writes gl_FragDepth = gl_FragCoord.z (fdz below); dual: its dual-source variant (below)
+    uint32_t clip_neg1, alt, fdz, dual, uint_outputs, vin, probe;   // fdz: the fragment shader's variant that writes gl_FragDepth = gl_FragCoord.z (fdz below); dual: its dual-source variant (below)
     uint64_t um[3], im[3];   // each stage's sampled bindings given integer views (vk_shader_module)
 } pkey;
+static void probe_pipeline(pkey *k, int mode) {
+    if (mode<1 || mode>3) return;
+    k->probe=(uint32_t)mode;k->dt=0;k->dw=0;
+    if (mode>=2) {k->cull=0;k->st=0;}
+    if (mode==3) {k->blend_en=0;k->dual=0;k->uint_outputs=0;k->a2c=0;k->logic_en=0;memset(k->wmask,0,sizeof k->wmask);k->wmask[0]=15;}
+}
 static nvn_hmap g_pipes = {.klen = sizeof(pkey)}; static pthread_mutex_t g_pipe_mu = PTHREAD_MUTEX_INITIALIZER;   // the replay thread and the prewarm threads
 static VkPipeline build_pipeline(const pkey *k, VkPipelineLayout layout, vkshader_t *const stg[3]);
 static void pipe_record(const pkey *k);
@@ -767,9 +779,10 @@ static VkPipeline graphics_pipeline(const pkey *k, VkPipelineLayout layout) {
 // ---- pipeline prewarm: every pipeline the game needed is recorded (DM_ROOT/vk_pipelines.bin) and made again at the next boot on background
 // threads, before the game reaches it, so a scene seen once never stalls a frame on a pipeline compile again (the driver's compile, not the
 // pipeline cache's lookup, is the cost: tens of milliseconds per pipeline on Adreno). DM_VK_NOPREWARM=1 turns it off.
-#define PIPE_MAGIC 0x32455050u   // "PPE2": integer vertex input variants; old keys can have the same padded size
+#define PIPE_MAGIC 0x33455050u   // "PPE3": optional draw probe is part of the pipeline key
 static FILE *g_prec;
 static void pipe_record(const pkey *k) {   // under g_pipe_mu
+    if (k->probe) return;   // diagnostic pipelines are not prewarmed on future normal runs
     if (!g_prec || k->alt) return;   // DM_VK_SPV_ALT's pipelines are a debugging run's own
     fwrite(k, sizeof *k, 1, g_prec); fflush(g_prec);
 }
@@ -813,6 +826,25 @@ static void prewarm_start(void) {
     VKLOG("prewarm: %zu recorded pipelines on %d threads", g_pw_n, nt);
     for (int i = 0; i < nt; i++) { pthread_t t; pthread_attr_t a; pthread_attr_init(&a); pthread_attr_setdetachstate(&a, PTHREAD_CREATE_DETACHED); pthread_create(&t, &a, prewarm_thread, NULL); pthread_attr_destroy(&a); }
 }
+// Diagnostic-only fragment shader: location 0 = opaque magenta. No game inputs.
+static VkShaderModule probe_fragment(void) {
+    static VkShaderModule module; static pthread_mutex_t mu=PTHREAD_MUTEX_INITIALIZER;
+    static const uint32_t words[]={
+        0x07230203u, 0x00010300u, 0x000d000au, 0x0000000du, 0x00000000u, 0x00020011u, 0x00000001u, 0x0006000bu,
+        0x00000001u, 0x4c534c47u, 0x6474732eu, 0x3035342eu, 0x00000000u, 0x0003000eu, 0x00000000u, 0x00000001u,
+        0x0006000fu, 0x00000004u, 0x00000004u, 0x6e69616du, 0x00000000u, 0x00000009u, 0x00030010u, 0x00000004u,
+        0x00000007u, 0x00040047u, 0x00000009u, 0x0000001eu, 0x00000000u, 0x00020013u, 0x00000002u, 0x00030021u,
+        0x00000003u, 0x00000002u, 0x00030016u, 0x00000006u, 0x00000020u, 0x00040017u, 0x00000007u, 0x00000006u,
+        0x00000004u, 0x00040020u, 0x00000008u, 0x00000003u, 0x00000007u, 0x0004003bu, 0x00000008u, 0x00000009u,
+        0x00000003u, 0x0004002bu, 0x00000006u, 0x0000000au, 0x3f800000u, 0x0004002bu, 0x00000006u, 0x0000000bu,
+        0x00000000u, 0x0007002cu, 0x00000007u, 0x0000000cu, 0x0000000au, 0x0000000bu, 0x0000000au, 0x0000000au,
+        0x00050036u, 0x00000002u, 0x00000004u, 0x00000000u, 0x00000003u, 0x000200f8u, 0x00000005u, 0x0003003eu,
+        0x00000009u, 0x0000000cu, 0x000100fdu, 0x00010038u,
+    };
+    pthread_mutex_lock(&mu);
+    if (!module) {VkShaderModuleCreateInfo ci={VK_STRUCTURE_TYPE_SHADER_MODULE_CREATE_INFO,NULL,0,sizeof words,words};VKCHK(vkCreateShaderModule(V.dev,&ci,NULL,&module));}
+    VkShaderModule result=module;pthread_mutex_unlock(&mu);return result;
+}
 static VkPipeline build_pipeline(const pkey *k, VkPipelineLayout layout, vkshader_t *const stg[3]) {
     VkPipeline p;
     VkPipelineShaderStageCreateInfo ss[3]; uint32_t ns = 0;
@@ -826,7 +858,7 @@ static VkPipeline build_pipeline(const pkey *k, VkPipelineLayout layout, vkshade
     for (int i = 0; i < 3; i++) if (stg[i] && !(i == 1 && k->raster_discard)) {
         int remap = k->clip_neg1 && !V.has_depth_clip_ctl && i == (stg[2] ? 2 : 0) && !k->raster_discard;
         ss[ns++] = (VkPipelineShaderStageCreateInfo){VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_CREATE_INFO, NULL, 0, fl[i],
-            vk_shader_module(stg[i], k->um[i], k->im[i], k->alt && !remap && !k->vin && !k->um[i] && !k->im[i] && !xo[i] ? 1u << 31 : xo[i],
+            i == 1 && k->probe == 3 ? probe_fragment() : vk_shader_module(stg[i], k->um[i], k->im[i], k->alt && !remap && !k->vin && !k->um[i] && !k->im[i] && !xo[i] ? 1u << 31 : xo[i],
                              (i == 1 ? (k->fdz ? VK_SHADER_FRAG_DEPTH : 0) | (k->dual ? VK_SHADER_DUAL_SOURCE : 0) | (k->uint_outputs ? VK_SHADER_UINT_OUTPUT : 0) : 0) | (remap ? VK_SHADER_CLIP_DEPTH : 0), i == 0 ? k->vin : 0), "main", NULL};
     }
     VkVertexInputAttributeDescription ad[16]; VkVertexInputBindingDescription bd[17]; VkVertexInputBindingDivisorDescriptionEXT dd[17]; uint32_t ndd = 0;
@@ -1298,6 +1330,15 @@ static int prepare_draw(int prim, int indexed) {
         const view_t *v=S.rt_has_cview[i]?&S.rt_cview[i]:NULL;
         const vkfmt_t *f=vk_fmt(v && v->set_format?v->format:S.rt_col[i].d.format);
         if (!f || !f->is_int || f->is_sint) k.uint_outputs=0;
+    }
+    // An opt-in probe for one known draw shader, never a game compatibility rule.
+    if (g_probe_shader && k.key[0]==g_probe_shader && S.sh[1] && !k.raster_discard && S.rt_has_col[0]) {
+        const vkfmt_t *target=vk_fmt(S.rt_has_cview[0] && S.rt_cview[0].set_format?S.rt_cview[0].format:S.rt_col[0].d.format);
+        if (target && !target->is_int) {
+            k.probe=(uint32_t)g_probe_mode;
+            if (g_probe_logged++<4) VKLOG("draw probe: shader %016llx mode %u applied; original depth test %u write %u func %u cull %u stencil %u",(unsigned long long)k.key[0],k.probe,k.dt,k.dw,k.df,k.cull,k.st);
+            probe_pipeline(&k,g_probe_mode);
+        }
     }
     k.clip_neg1 = !g_depth_zero;
     // layout and pipeline

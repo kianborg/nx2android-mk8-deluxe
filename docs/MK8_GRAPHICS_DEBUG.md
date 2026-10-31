@@ -97,3 +97,35 @@ passed SPIR-V validation after conversion. Synthetic signed/unsigned vector and
 component-load cases and variant/cache routing are regression-tested. Rendering
 on the phone remains to be verified; this is not evidence that every missing
 icon or post-processing artifact has the same cause.
+
+## Driver-data capture and targeted draw probes
+
+The driver-data log has 120 uniform samples, all finite. At present 2177 a
+colour draw has 8,064 indices in range 0–1782, within its 32,772-byte position
+buffer (12-byte stride). Logged matrices vary over subsequent frames. As a
+sanity check, applying the first logged position to each of the first ten
+available bone matrices and the logged view-projection matrix puts it within
+the camera's clip volume. This is not the actual weighted vertex result: the
+log does not capture that vertex's bone indices/weights or the GPU's reads.
+It does not prove GPU geometry is correct.
+
+The earlier trace's main driver colour draw uses EQUAL depth comparison, with
+depth writes off. A differing pre-pass result can reject the colour draw, but
+that has not yet been established on the phone. A diagnostic build supports
+`DM_VK_DRAW_PROBE=<vertex shader key>:<mode>` in env.txt, for example
+`DM_VK_DRAW_PROBE=45539f60801ff5e3:1`. Only matching draws with a fragment
+shader and a noninteger colour target 0 are changed:
+
+| Mode | Change | What a visible character would establish |
+|---|---|---|
+| 1 | Disable depth testing and depth writes | Depth rejection contributes to the missing draw |
+| 2 | Mode 1 plus disable face culling and stencil testing | Culling or stencil may reject it if mode 1 did not reveal it |
+| 3 | Mode 2 plus replace the fragment shader with opaque magenta on colour target 0; disable blending/alpha-to-coverage | A magenta mesh demonstrates geometry reaching that colour target when the original fragment path is bypassed |
+
+Use modes in sequence, comparing the same scene. A probe can make objects
+visible through other objects: it is a diagnostic, not a gameplay fix. The log
+must contain `draw probe: shader ... mode ... applied` before interpreting a
+result. Matching some driver meshes does not guarantee every character or
+menu icon uses that shader. Remove the setting and restart to restore normal
+rendering. Diagnostic pipelines are not recorded for subsequent prewarming.
+The embedded magenta SPIR-V is validated and probe-state changes are tested.
