@@ -32,4 +32,6 @@ With **USB debugging** on (Settings → About → tap *Build number* seven times
 
 The log at the bottom of the Port tab says why; lines in red are errors. Ask on the project's GitHub page (Issues), with the game's title ID, your device and the red lines. Never post your keys or game files.
 
+**The game crashes and its log shows "AllocateAddressRegion … refused (0x1803)".** The game's own log is `log.txt` in `/sdcard/Android/data/<package>/files/` on the device. Such a game takes its memory as address regions, and your game version needs more address space than the version the game's profile was tested with (for example the base game without its update). Port it again with a larger **Extra address space** on the Port tab (the ⓘ icon explains it), for example 16 GB, then 24 GB. **Auto** already gives 8 GB to a game version the profile was not tested with. The setting uses no memory on the device and does not change the speed. On the command line it is `--alias-headroom <GB>`.
+
 The command line is the same program: `nx2android.exe -m porter -h`.

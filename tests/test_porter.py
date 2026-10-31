@@ -193,6 +193,68 @@ class Misc(unittest.TestCase):
         with self.assertRaises(AdbError) as e: a.install('x.apk', 'org.nx2a.test')
         self.assertIn('(589826)', str(e.exception)); self.assertIn('--vercode-offset', str(e.exception))
 
+    def test_derived_alias_headroom(self):   # issue #26: a derived profile of a game with virtual address memory gets 8 GB more alias region, the heap unchanged
+        d = profile_dir([('status', 'playable')])
+        try:
+            t = d / 'game.tsv'; base = t.read_text(encoding='utf-8')
+            t.write_text(base + '# memory\nmem_reserve\t0x140000000\nmem_alias\t0x118000000\nmem_stack\t0x10000000\nsys_resource\t0x1000000\n', encoding='utf-8')
+            self.assertEqual(pipeline.alias_headroom(t), (0x118000000, 0x318000000))
+            g = game.load(d.name)
+            self.assertEqual((g.int('mem_reserve'), g.int('mem_alias'), g.int('mem_stack')), (0x340000000, 0x318000000, 0x10000000))
+            self.assertIn('# porter: 8 GB more alias region', t.read_text(encoding='utf-8'))
+            vam = base + 'mem_reserve\t0x140000000\nmem_alias\t0x118000000\nmem_stack\t0x10000000\nsys_resource\t0x1000000\n'
+            t.write_text(vam, encoding='utf-8'); self.assertEqual(pipeline.alias_headroom(t, 16), (0x118000000, 0x518000000))   # --alias-headroom 16
+            self.assertIn('# porter: 16 GB more alias region', t.read_text(encoding='utf-8'))
+            t.write_text(vam, encoding='utf-8'); self.assertIsNone(pipeline.alias_headroom(t, 0)); self.assertEqual(t.read_text(encoding='utf-8'), vam)   # 0: as it is
+            for rows in ('sys_resource\t0x0\n', ''):   # no virtual address memory, or a profile older than the key (heap games): as it is
+                t.write_text(base + 'mem_reserve\t0x100000000\nmem_alias\t0x10000000\nmem_stack\t0x10000000\n' + rows, encoding='utf-8')
+                self.assertIsNone(pipeline.alias_headroom(t)); self.assertIsNone(pipeline.alias_headroom(t, 16))
+                self.assertEqual(game.load(d.name).int('mem_alias'), 0x10000000)
+        finally: shutil.rmtree(d.parent, ignore_errors=True); os.environ.pop('DM_GAMES_DIR', None)
+
+    def test_alias_headroom_option(self):   # --alias-headroom: parsed, checked before any stage, and kept as None (automatic) when not given
+        from porter import cli
+        self.assertEqual(cli._parser().parse_args(['port', 'x', '--alias-headroom', '16']).alias_headroom, 16)
+        self.assertIsNone(cli._parser().parse_args(['port', 'x']).alias_headroom)
+        for ok in (None, 0, pipeline.ALIAS_HEADROOM_MAX): self.assertEqual(pipeline.alias_headroom_gb(ok), ok)
+        t = Path(tempfile.mkdtemp(prefix='nx2a_test_game_'))
+        try:
+            for bad in (-1, pipeline.ALIAS_HEADROOM_MAX + 1):
+                with self.assertRaises(pipeline.BuildError) as e: pipeline.Port(pipeline.Options(folder=t, alias_headroom=bad)).run()
+                self.assertIn('--alias-headroom', str(e.exception))
+        finally: shutil.rmtree(t, ignore_errors=True)
+
+    def test_mem_profile(self):   # --alias-headroom on a version the profile was brought up on: a copy in profile-mem/ in front, without patches.py; none without the option
+        d = profile_dir([('status', 'playable')]); environ = dict(os.environ); t = Path(tempfile.mkdtemp(prefix='nx2a_test_build_'))
+        try:
+            (d / 'game.tsv').write_text((d / 'game.tsv').read_text(encoding='utf-8') + 'mem_reserve\t0x140000000\nmem_alias\t0x118000000\nmem_stack\t0x10000000\nsys_resource\t0x1000000\n',
+                                        encoding='utf-8')
+            (d / 'patches.py').write_text('CUTS = {}\n', encoding='utf-8')
+            port = pipeline.Port(pipeline.Options(folder=t, alias_headroom=16)); port.env = {}; port.work = t; port.g = game.load(d.name)
+            port.mem_profile()
+            self.assertEqual(port.g.dir, (t / 'profile-mem' / d.name).resolve())
+            self.assertEqual((port.g.int('mem_alias'), port.g.int('mem_reserve')), (0x518000000, 0x540000000))
+            self.assertFalse((port.g.dir / 'patches.py').exists()); self.assertEqual(os.environ.get('DM_GAMES_FIRST'), '1')
+            shutil.rmtree(t / 'profile-mem')   # as extract() does before it
+            port.o.alias_headroom = None; port.g = game.load(d.name); port.mem_profile()
+            self.assertFalse((t / 'profile-mem').exists()); self.assertEqual(port.g.dir, d.resolve())
+        finally:
+            os.environ.clear(); os.environ.update(environ); shutil.rmtree(d.parent, ignore_errors=True); shutil.rmtree(t, ignore_errors=True)
+
+    def test_lost_patches(self):   # issue #26: a derived module of another build than the tested one, which has cuts, is named; one with cuts of its own, or no cuts lost, is not
+        d = Path(tempfile.mkdtemp(prefix='nx2a_test_exefs_'))
+        try:
+            for m, bid in (('main', 'aa' * 16), ('sdk', 'bb' * 16), ('subsdk0', 'cc' * 16)): (d / m).write_bytes(b'NSO0' + bytes(0x3c) + bytes.fromhex(bid))
+            builds = {'v65536': {'display': '1.1.0', 'main': '11' * 16, 'sdk': '22' * 16, 'subsdk0': 'cc' * 16}}
+            table = {'22' * 16: ('dm/tools/sdk_patches.py', ['AddressRegionManager constructor: node area limit', 'AddressRegionManager constructor: length']), '33' * 16: ('x', ['y'])}
+            lost = pipeline.lost_patches(builds, d, ['main', 'sdk', 'subsdk0'], table)
+            self.assertEqual(len(lost), 1); self.assertTrue(lost[0].startswith('sdk build bbbbbbbb… is not the tested 22222222…'))
+            self.assertIn('2 registered patches (dm/tools/sdk_patches.py: AddressRegionManager constructor)', lost[0])
+            table['bb' * 16] = ('dm/tools/sdk_patches.py', ['z'])   # the derived build has cuts of its own
+            self.assertEqual(pipeline.lost_patches(builds, d, ['main', 'sdk', 'subsdk0'], table), [])
+            self.assertIn('6075151627016eef437c1312f2e3ed56', pipeline.registered_patches())   # the real files load
+        finally: shutil.rmtree(d, ignore_errors=True)
+
     def test_app_stem(self):
         self.assertEqual(pipeline.app_stem(game.load(NEO), 'NEO'), 'NeoTheWorldEndsWithYou')
 
