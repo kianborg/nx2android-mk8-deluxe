@@ -129,3 +129,31 @@ result. Matching some driver meshes does not guarantee every character or
 menu icon uses that shader. Remove the setting and restart to restore normal
 rendering. Diagnostic pipelines are not recorded for subsequent prewarming.
 The embedded magenta SPIR-V is validated and probe-state changes are tested.
+
+## Complete CPU draw packet
+
+The mode-3 character-selection screenshot shows disconnected magenta triangles
+around and below the kart, rather than a recognizable driver. This demonstrates
+malformed geometry in the selected draw when the original material and rejection
+states are bypassed. It does not by itself identify whether the source streams,
+skinning, GPU buffer reads or vertex shader execution are wrong. It also does
+not explain the Stadium rectangles or missing menu icons.
+
+`DM_VK_DRAW_PACKET=45539f60801ff5e3` requests one indexed colour draw of that
+vertex shader. The runtime writes `draw_packet.json`, the referenced vertex
+streams, complete bound vertex constant buffers, and its indices into
+`DM_ROOT/draw_packet_*.bin`. The snapshot is automatic at the first matching
+direct indexed draw, without a fixed frame/pass number. The manifest describes
+NVN attribute formats, stream offsets/strides, buffer sizes and uniform register
+bindings, and says whether every requested blob was saved. Each blob is limited
+to 1 MiB and must lie within a known pool. Unsupported indirect draws are not
+captured. Invalid or oversized blobs produce an incomplete packet and a red log
+line rather than an out-of-bounds read. Only one packet is attempted per launch.
+
+These are CPU-side replay inputs, not a GPU readback. Uniforms include pending
+host updates through `vk_ubd_read`; vertex streams and indices are guest-memory
+copies. The capture does not alter draw state or shaders. The request is off
+unless explicitly present in env.txt. Capturing the indices, weights and full
+bone palette together enables offline reconstruction that the earlier partial
+uniform logs could not support. Use the manifest to select files from a run;
+older unused packet files can remain on disk.
