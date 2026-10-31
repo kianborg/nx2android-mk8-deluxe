@@ -157,3 +157,28 @@ unless explicitly present in env.txt. Capturing the indices, weights and full
 bone palette together enables offline reconstruction that the earlier partial
 uniform logs could not support. Use the manifest to select files from a run;
 older unused packet files can remain on disk.
+
+## Offline reconstruction result
+
+The uploaded complete packet at present 685 has 8,088 indices referencing
+1,818 vertices (indices 0–1817). All referenced vertices have byte weights
+summing to 255; every weighted bone reference is within the 33-matrix palette.
+Reference linear-blend skinning produces a recognizable driver mesh rather
+than the scattered triangles of the magenta GPU probe. This establishes that
+these CPU-captured inputs are internally consistent. It does not validate the
+full translated vertex program, GPU uploads, descriptor bindings or GPU reads.
+
+Reproduce with `python devtools/analyze_draw_packet.py <extracted packet>`.
+The tool is explicitly limited to the inspected shader and input layout, checks
+stream bounds and file paths, and writes a JSON report and orthographic
+wireframes beside the packet. Its weighted transform, base-vertex handling,
+strides and input bounds have a synthetic regression test. Captured game data
+and generated images remain outside the repository.
+
+A next comparison can use the existing `DM_VK_DYN_UBO=0` startup setting to
+remove dynamic uniform-buffer descriptors/offsets while retaining the shaders
+and their constant data. This is distinct from the previously tested draw-bind
+cache switch. Start from the original env.txt, without the magenta probe or
+packet capture enabled, and compare the same character menu and circuit.
+This is a diagnostic comparison, not an established fix or proof of a driver
+bug. It requires an app restart but no host/APK rebuild.
