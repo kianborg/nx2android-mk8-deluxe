@@ -20,6 +20,7 @@ def _parser():
     po.add_argument('--install', action='store_true', help='install on the connected device afterwards')
     po.add_argument('--device', default='', help='adb serial of the device to install on')
     po.add_argument('--replace-signer', action='store_true', help='uninstall an app of the same package signed with another key first (deletes its saves)')
+    po.add_argument('--vulkan-driver', help='optional ARM64 custom Vulkan driver ZIP to bundle for per-app testing (system driver remains default)')
     po.add_argument('--debug', action='store_true', help='a development build: debug information, debuggable, DM_CTL key presses')
     po.add_argument('--experimental', action='store_true', help='try a game not ported to Android yet (a profile guessed from a survey of its files; it may not start)')
     po.add_argument('--package', default='', help="the app's package instead of the profile's (a test install beside another build of the game)")
@@ -127,7 +128,7 @@ def cmd_port(a):
         except ValueError: print(f'NX2A_VERCODE_OFFSET is not a number: {env}', file=sys.stderr); return 2
     opts = pipeline.Options(folder=Path(a.folder), keys=Path(a.keys) if a.keys else None, out=Path(a.out) if a.out else None, version=a.version, language=a.language,
                             app_name=a.app_name, install=a.install, device=a.device, replace_signer=a.replace_signer, debug=a.debug, experimental=a.experimental, package=a.package, fps60=a.fps60, touch=a.touch,
-                            vercode_offset=offset, alias_headroom=a.alias_headroom, jobs=a.jobs)
+                            vercode_offset=offset, alias_headroom=a.alias_headroom, jobs=a.jobs, vulkan_driver=Path(a.vulkan_driver) if a.vulkan_driver else None)
     return _with_progress(a.progress, lambda: pipeline.emit_result(pipeline.Port(opts).run()))
 
 

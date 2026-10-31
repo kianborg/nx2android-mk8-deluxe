@@ -29,6 +29,7 @@ class Options:
     install: bool = False              # install on the device after packing
     device: str = ''                   # adb serial
     replace_signer: bool = False       # uninstall an app of the same package signed with another key
+    vulkan_driver: Path = None         # optional custom ARM64 driver ZIP, packaged via AdrenoTools
     debug: bool = False                # a development build: debug information, debuggable, DM_CTL
     experimental: bool = False         # a game not ported to Android yet: a provisional profile from upstream's survey (or a copy of its iOS profile), status experimental
     package: str = ''                  # the app's package instead of the profile's (a test install beside another build of the game)
@@ -558,9 +559,13 @@ class Port:
         icon = self.icon()
         code = version_code(self.pkg_ver, self.o.vercode_offset)
         if self.o.vercode_offset: say(f'versionCode {code} ({self.pkg_ver} + 1 + offset {self.o.vercode_offset})')
+        driver_args = []
+        if self.o.vulkan_driver:
+            from porter.gpu_driver import apk_args
+            driver_args = apk_args(self.o.vulkan_driver, self.tools['ndk'], self.o.out / 'vulkan-driver-build', self.logs / 'android_driver.log')
         nsp.run([PY, DM / 'android/apk/mkapk.py', self.so, self.apk_path, paths.signing_key(), '--package', self.package, '--label', self.app_name, '--lib', 'dmhost',
                  '--version-code', str(code), '--version-name', self.display]
-                + (['--landscape'] if self.ap.landscape else []) + (['--icon', icon] if icon else []) + self.theme() + ([] if self.o.debug else ['--release']),
+                + (['--landscape'] if self.ap.landscape else []) + (['--icon', icon] if icon else []) + self.theme() + driver_args + ([] if self.o.debug else ['--release']),
                 self.logs / 'android_apk.log', env=self.env)
         self.result['apk'] = str(self.apk_path)
         PROG.end(f'{self.apk_path.name}, {self.apk_path.stat().st_size / 2**20:.1f} MB')

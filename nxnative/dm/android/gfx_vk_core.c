@@ -52,8 +52,8 @@ static VKAPI_ATTR VkBool32 VKAPI_CALL vk_validation_msg(VkDebugUtilsMessageSever
 
 void vk_init(void) {
     static int done; if (done) return; done = 1;
-    void *lib = dlopen("libvulkan.so", RTLD_NOW | RTLD_LOCAL);
-    if (!lib) die("[vk] libvulkan.so: %s", dlerror());
+    void *vk_open_loader(void);
+    void *lib = vk_open_loader();
     p_vkGetInstanceProcAddr = (PFN_vkGetInstanceProcAddr)dlsym(lib, "vkGetInstanceProcAddr");
     vkCreateInstance = (PFN_vkCreateInstance)p_vkGetInstanceProcAddr(NULL, "vkCreateInstance");
     const char *iext[] = {"VK_KHR_surface", "VK_KHR_android_surface", "VK_EXT_debug_utils"};
@@ -87,6 +87,17 @@ void vk_init(void) {
     if (V.qf == qn) die("[vk] no graphics + compute queue");
     uint32_t ne = 0; vkEnumerateDeviceExtensionProperties(V.pd, NULL, &ne, NULL);
     VkExtensionProperties *ex = calloc(ne, sizeof *ex); vkEnumerateDeviceExtensionProperties(V.pd, NULL, &ne, ex);
+    { const char *driver=getenv("DM_VK_DRIVER");
+      if (driver && *driver && strcmp(driver,"system")) {
+        if (VK_API_VERSION_MAJOR(V.props.apiVersion)==1 && VK_API_VERSION_MINOR(V.props.apiVersion)<2 && !has_ext(ex,ne,"VK_KHR_driver_properties"))
+            die("[vk] custom driver could not be verified as Mesa Turnip; system fallback is not accepted");
+        VkPhysicalDeviceDriverProperties properties={VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_DRIVER_PROPERTIES};
+        VkPhysicalDeviceProperties2 query={VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_PROPERTIES_2,&properties};
+        vkGetPhysicalDeviceProperties2(V.pd,&query);
+        VKLOG("custom driver identity: %s; %s; driverID %u",properties.driverName,properties.driverInfo,(unsigned)properties.driverID);
+        if (properties.driverID!=VK_DRIVER_ID_MESA_TURNIP) die("[vk] custom driver mode requires Mesa Turnip; another driver or a system fallback was selected");
+      }
+    }
     const char *want[] = {"VK_KHR_swapchain", "VK_ANDROID_external_memory_android_hardware_buffer", "VK_EXT_queue_family_foreign", "VK_EXT_custom_border_color",
                           "VK_EXT_robustness2", "VK_EXT_depth_clip_control", "VK_EXT_provoking_vertex", "VK_EXT_index_type_uint8", "VK_EXT_transform_feedback",
                           "VK_GOOGLE_display_timing"};

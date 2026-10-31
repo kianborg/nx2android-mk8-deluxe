@@ -4,6 +4,7 @@ This is code written by others, shipped with the repository so there is nothing 
 
 | Directory | What it is | Version and changes | Where it is used | License file |
 |---|---|---|---|---|
+| `adrenotools/` | Rootless per-app Vulkan driver loading, with liblinkernsbypass | AdrenoTools `8fae8ce`, liblinkernsbypass `aa39758`, unmodified source | Optional `porter port --vulkan-driver ZIP`; built only for custom-driver APKs | `adrenotools/LICENSE`, `adrenotools/lib/linkernsbypass/LICENSE` (BSD-2-Clause) |
 | `bcdec/` | CPU BC1–BC7 block decoder | v0.985, commit `80859ed3b7afb1c527a2a99d70c61457bea72d0c`, signed BC4/BC5 endpoints use explicit `signed char` for ARM | Android texture decompression when native BC is unavailable | `bcdec/LICENSE` (MIT option) |
 | `flip/` | NVIDIA FLIP, an image difference metric that models human viewing. `FLIP.h` plus the source of the command-line tool in `tool/` | Not recorded in the directory | Verification: the image quality measurements in `dm/verify/gfxq/`; build `flip` first with `make -C dm/third_party/flip` | `flip/LICENSE` (BSD 3-Clause) |
 | `libvpx/` | The VP9 decoder from libvpx: the 71 source files a VP9-decoder-only build compiles, their headers, and the generated configuration in `config/` | v1.17.0 (upstream commit `6df3ec3`), unmodified | Host: decodes the games' VP9 movies (`dm/host/hle_movie.c`). `dm/host/Makefile` builds it into `gen/vpx/libvpx.a`; the iOS build compiles the same files | `libvpx/LICENSE` (BSD 3-Clause), with the patent grant in `libvpx/PATENTS` |

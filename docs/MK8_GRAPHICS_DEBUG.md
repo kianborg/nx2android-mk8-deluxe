@@ -37,13 +37,14 @@ measure the effect of this correction on the visible glitches.
 | Qualcomm system Vulkan | Implemented; current default | Baseline after the signed-decoder fix |
 | System Vulkan with `DM_VK_UBWC=0` | Existing environment switch | Compare image creation without the framebuffer compression optimizations; may cost performance |
 | System Vulkan with `DM_VK_X_NOBC=1` | Existing diagnostic switch | Reissue draw bindings to test the runtime's binding cache; may cost performance |
-| Mesa Turnip | No custom-driver loader integrated | A useful future driver comparison for this Adreno; requires Android driver-loading integration and device verification |
+| Mesa Turnip | Optional `--vulkan-driver ZIP` packaging and AdrenoTools loader | See TURNIP_TEST.md; phone rendering remains unverified |
 | OpenGL ES | No Android NVN backend implemented | A new backend, not a selectable setting |
 | Metal | Apple backend only | Cannot run on this Android phone |
 
-Turnip changes the Vulkan driver, not the NVN rendering backend. The runtime
-currently opens system `libvulkan.so` directly. Renaming a downloaded driver
-library is not a supported installation method.
+Turnip changes the Vulkan driver, not the NVN rendering backend. The runtime defaults to system `libvulkan.so`; an explicit custom-driver
+setting can select a driver bundled with the APK. Use the porter integration
+described in [TURNIP_TEST.md](TURNIP_TEST.md), rather than copying a library to
+external storage.
 
 First rebuild and reinstall the merged baseline, with temporary capture and
 experiment switches removed from env.txt. Compare the same menu and race.
@@ -182,3 +183,19 @@ cache switch. Start from the original env.txt, without the magenta probe or
 packet capture enabled, and compare the same character menu and circuit.
 This is a diagnostic comparison, not an established fix or proof of a driver
 bug. It requires an app restart but no host/APK rebuild.
+
+## Copied-buffer and static-uniform results
+
+Neither the static-uniform comparison nor the no-zero-copy comparison restored
+the character. The copied-pool log confirms fallback -4 and copied allocations;
+the screenshot still shows malformed coloured geometry, at about 1 FPS. This
+fallback is not a practical workaround. The CPU-side vertex reference and a
+scalar interpreter of the supplied SPIR-V (including its integer-input variant)
+agree over 1,818 referenced vertices, within about 7.5e-6 in clip coordinates.
+That still does not prove GPU reads/execution match the CPU model.
+
+An optional AdrenoTools/Turnip path is now available for a driver comparison.
+The code validates driverID 18 after device enumeration, so a loader that
+silently falls back to Qualcomm cannot count as a successful Turnip trial.
+The helper libraries build for ARM64 and a real Turnip ZIP has been packaged
+into a signed test APK in the cloud; that packaging test is not device testing.

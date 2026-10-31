@@ -158,3 +158,13 @@ The engine is our own fork since 2026-10-29: no subtree pull from upstream, and 
 1. `python -m porter port <folder> --experimental --install`: the survey, a provisional profile and a first try on the device. Bring it up from there with the upstream tools and `devtools/` (docs in `nxnative/docs/agents`): the profile moves to `dm/games/<title ID>/`, fixes go into the core as general rules.
 2. Add `android.tsv` with `status` and `tested`.
 3. `python -m porter port` on its folder, install, play. Raise `status` to `playable` when it is.
+
+### Optional custom Vulkan driver
+
+`porter port --vulkan-driver ZIP` builds and packages pinned AdrenoTools helpers
+and an ARM64 driver from an explicit user-provided package. No extra libraries
+are added for normal ports. System Vulkan remains the default;
+`DM_VK_DRIVER=turnip` selects the APK's bundled library. The runtime verifies
+Mesa Turnip's driverID and refuses silent fallback. See
+[TURNIP_TEST.md](TURNIP_TEST.md) for the Nothing Phone (1) comparison procedure
+and its current validation limits.
