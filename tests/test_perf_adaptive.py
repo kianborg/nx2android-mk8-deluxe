@@ -16,6 +16,10 @@ class AdaptiveFrameRate(unittest.TestCase):
             self.skipTest('a C compiler is required')
         src = SOURCE.read_text(encoding='utf-8')
         controller = src[src.index('static const int64_t STEPS[]'):src.index('// hle_nvn.c, the first acquire')]
+        # ADPF reporting now sits between controller helpers; it needs Android APIs.
+        start = controller.index('static void hint_report(')
+        end = controller.index('// The frames\' time on screen', start)
+        controller = controller[:start] + controller[end:]
         harness = r'''
 #include <assert.h>
 #include <stdint.h>
@@ -23,6 +27,10 @@ class AdaptiveFrameRate(unittest.TestCase):
 #include <stdlib.h>
 #include <string.h>
 #define LOG(...) do { if (0) printf(__VA_ARGS__); } while (0)
+#ifdef _WIN32  // MinGW (the Windows release runner) has no setenv; "NAME=" removes the variable
+static int setenv(const char *k, const char *v, int o) { char s[256]; (void)o; snprintf(s, sizeof s, "%s=%s", k, v); return _putenv(s); }
+static int unsetenv(const char *k) { char s[256]; snprintf(s, sizeof s, "%s=", k); return _putenv(s); }
+#endif
 ''' + controller + r'''
 static int64_t mixed_work(int i) { return i % 64 < 48 ? 15000000 : 27000000; }
 int main(int argc, char **argv) {

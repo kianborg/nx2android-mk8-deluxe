@@ -81,6 +81,7 @@ const vkfmt_t *vk_fmt(int f) {
             o->is_int = e.kind == K_INT || e.kind == K_SINT; o->is_sint = e.kind == K_SINT; o->kind = 1;
             o->swz = (VkComponentMapping){VK_COMPONENT_SWIZZLE_IDENTITY, VK_COMPONENT_SWIZZLE_IDENTITY, VK_COMPONENT_SWIZZLE_IDENTITY, e.noalpha ? VK_COMPONENT_SWIZZLE_ONE : VK_COMPONENT_SWIZZLE_IDENTITY};
             const char *force_bc = getenv("DM_VK_BC_DECODE");
+            if (!force_bc) force_bc = getenv("DM_VK_X_BC_CPU");
             if (f >= 0x41 && f <= 0x50 && (!V.has_bc || (force_bc && atoi(force_bc)))) {
                 o->bc_decode = 1; o->compressed = 0;
                 o->vk = f == 0x49 ? VK_FORMAT_R8_UNORM : f == 0x4a ? VK_FORMAT_R8_SNORM :
@@ -553,7 +554,8 @@ VkImageView vk_tex_view(const tex_t *t, const view_t *vw, int dim, int arrayed, 
                                      swz.b = apply(swz_comp(vw->swz[2]), &o, VK_COMPONENT_SWIZZLE_B); swz.a = apply(swz_comp(vw->swz[3]), &o, VK_COMPONENT_SWIZZLE_A); }
     } else swz = (VkComponentMapping){0};
     VkFormat fmt = f->vk;
-    if ((im->aspect & ~VK_IMAGE_ASPECT_COLOR_BIT) || f->compressed != vk_fmt(im->nvn_format)->compressed) fmt = im->fmt;   // depth views and block-size changes keep the image's format
+    const vkfmt_t *imf = vk_fmt(im->nvn_format);   // (a BC format decoded on the CPU counts as compressed: its view keeps the decoded image's format)
+    if ((im->aspect & ~VK_IMAGE_ASPECT_COLOR_BIT) || (f->compressed || f->bc_decode) != (imf->compressed || imf->bc_decode)) fmt = im->fmt;   // depth views and block-size changes keep the image's format
     if (im->fixed_fmt && fmt != im->fmt && fmt != srgb_twin(im->fmt)) { fmt = im->fmt; static int n; if (n++ < 8) VKLOG("[RED] view format %d of a format-listed image (%d, DM_VK_UBWC): the image's own used", f->vk, im->fmt); }
     pthread_mutex_lock(&g_view_mu);
     vview *head = nvn_hm_get(&g_views, &im);

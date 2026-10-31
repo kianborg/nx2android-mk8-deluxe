@@ -21,7 +21,7 @@ class BCDecode(unittest.TestCase):
         cls.tmp = tempfile.TemporaryDirectory()
         lib = Path(cls.tmp.name) / 'bc.so'
         subprocess.run(['cc', '-shared', '-fPIC', '-O2', '-fno-strict-aliasing',
-                        '-I', str(TEX), str(TEX / 'nvn_bc.c'), str(TEX / 'nvn_deswizzle.c'),
+                        *getattr(cls, 'compiler_flags', []), '-I', str(TEX), str(TEX / 'nvn_bc.c'), str(TEX / 'nvn_deswizzle.c'),
                         str(TEX / '../nvn/nvn_tex.c'), str(ROOT / 'tests/bc_layout_fixture.c'),
                         '-o', str(lib)], check=True, capture_output=True)
         cls.lib = C.CDLL(str(lib))
@@ -104,3 +104,8 @@ class BCDecode(unittest.TestCase):
 
     def test_swizzled_mips_arrays_cubes_and_3d(self):
         self.assertEqual(self.lib.test_bc_layouts(), 115)
+
+
+class UnsignedCharBCDecode(BCDecode):
+    """Android ARM uses unsigned plain char; signed endpoints must still decode."""
+    compiler_flags = ["-funsigned-char"]
