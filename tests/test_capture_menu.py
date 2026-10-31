@@ -53,3 +53,29 @@ class MenuCaptureTests(unittest.TestCase):
         self.assertIn(b'DM_VK_X_SKIPVS=b2cfa260c7494f18\n', result)
         self.assertIn(b'DM_VK_PASSDUMP=9000\n', result)
         self.assertIn(b'DM_VK_X_SKIPVS=old\n', capture.capture_env(original, 9000))
+
+    def test_uniform_capture_includes_sampled_float_texture_and_rgba_sidecars(self):
+        log = ("frame trace begins at present 9000\n"
+               "pass dump 01 is the submission's pass -100 (present 9000)\n"
+               "pass dump 01: 2048x2048 RG32F, values 0 .. 1, nonzero texels 1 → /files/pass_01.ppm\n"
+               "pass dump 02 is the submission's pass 16 (present 9000)\n"
+               "pass dump 02 raw RGBA8 → /files/pass_02.ppm.rgba8\n"
+               "pass dump 02: 960x540 format 37 → /files/pass_02.ppm\n")
+        self.assertEqual(capture.pass_files(log, 9000),
+                         ['pass_01.ppm', 'pass_02.ppm', 'pass_01.ppm.f32', 'pass_02.ppm.rgba8'])
+        env = capture.capture_env(b'DM_VK_DRIVER=turnip\nDM_VK_BC_DECODE=1\n', 9000, 'uniforms')
+        self.assertIn(b'DM_VK_DRAW_PACKET_AT=9000\n', env)
+        self.assertNotIn(b'DM_VK_X_SKIPVS', env)
+
+    def test_packet_collection_requires_fragment_inputs_and_safe_filenames(self):
+        packet = {'complete': True, 'present': 9000, 'vertex_shader': 'b2cfa260c7494f18',
+                  'fragment_shader': '6aa6c36ed6065b7d', 'streams': [],
+                  'uniforms': [{'stage': 1, 'register': 3, 'saved': True, 'size': 608,
+                                'file': 'draw_packet_fragment_uniform_03.bin'}]}
+        self.assertIn('draw_packet_fragment_uniform_03.bin', capture.packet_files(packet, 9000))
+        packet['uniforms'][0]['file'] = '../outside.bin'
+        with self.assertRaises(ValueError):
+            capture.packet_files(packet, 9000)
+        packet['uniforms'] = []
+        with self.assertRaises(ValueError):
+            capture.packet_files(packet, 9000)

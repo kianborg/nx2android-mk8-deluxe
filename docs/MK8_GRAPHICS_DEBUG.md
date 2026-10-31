@@ -485,3 +485,20 @@ Restore with `python3 devtools/pipeline_stability.py restore`; restoration
 checks that env.txt has not changed since start. Use the same `--output` folder
 for both actions if a fresh backup folder is needed. No pipeline cache clearing
 is requested. The helper's settings preservation and rejection cases are tested.
+
+## Next shadow investigation: paired resolve inputs/output
+
+The earlier packet diagnostic saved vertex constants only and could trigger on
+a menu draw before reaching the race. It now accepts DM_VK_DRAW_PACKET_AT and
+saves vertex and fragment constants separately (stage-tagged records). The
+bounded one-shot packet is paired with the frame-9000 pass capture. The helper's
+uniforms mode also selects the resolve's sampled RG32F input by shader/binding,
+preserves its exact float pairs, and saves mask RGBA8 values including alpha.
+This closes concrete data gaps in the earlier pass-image-only capture without
+repeating the inconclusive map-off test. See MK8_SHADOW_CAPTURE.md.
+
+Regressions cover delayed capture, stage-separated deferred uniform reads,
+bounded packet blobs, collection of negative-numbered sampled-texture passes,
+raw sidecars and rejection of unsafe/missing packet files. The full suite passes
+106 tests and the Android release library compiles 142 sources with no failures.
+Phone validation of the new diagnostic capture remains pending.

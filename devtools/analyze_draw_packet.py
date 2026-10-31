@@ -39,7 +39,7 @@ def reconstruct(folder):
     positions,ps,po=attribute(0,0x22,12)
     weights,ws,wo=attribute(4,0x25,4)
     indices,bs,bo=attribute(6,0x27,4)
-    palette=next(u for u in manifest['uniforms'] if u['binding']==1)
+    palette=next(u for u in manifest['uniforms'] if u['binding']==1 and u.get('stage',0)==0)
     if not palette['saved']:raise ValueError('Bone palette is absent.')
     bones=blob(palette['file'])
     if len(bones)!=palette['size'] or len(bones)%48:raise ValueError('Invalid 3x4 bone palette.')

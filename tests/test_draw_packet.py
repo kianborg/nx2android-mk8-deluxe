@@ -38,15 +38,24 @@ int main(int argc,char **argv) {
  if(argc!=3)return 2;
  setenv("DM_ROOT",argv[1],1);setenv("DM_VK_DRAW_PACKET","123",1);
  for(unsigned i=0;i<sizeof arena;i++)arena[i]=(unsigned char)i;
- dmsv_bind binding={1,4,1};vkshader_t vs={.key=0x999,.local={17,0,0},.nbind=1,.b=&binding},fs={.key=0x456};S.sh[0]=&vs;S.sh[1]=&fs;S.rt_has_col[0]=1;
+ dmsv_bind binding={1,4,1};vkshader_t vs={.key=0x999,.local={17,0,0},.nbind=1,.b=&binding},fs={.key=0x456,.nbind=1,.b=&binding};S.sh[0]=&vs;S.sh[1]=&fs;S.rt_has_col[0]=1;
  va_st attr={.fmt=34,.offset=0,.stream=0};memcpy(&S.vattr[0],&attr,4);
  attr=(va_st){.fmt=37,.offset=4,.stream=3};memcpy(&S.vattr[4],&attr,4);
  S.vbuf[0].address=(uintptr_t)arena+128;S.vbuf[0].size=48;S.vstream[0].stride=12;
  S.vbuf[3].address=(uintptr_t)arena+256;S.vbuf[3].size=16;S.vstream[3].stride=4;
+ S.ubo[1][4].addr=(uintptr_t)arena+896;S.ubo[1][4].size=32;
  S.ubo[0][4].addr=(uintptr_t)arena+768;S.ubo[0][4].size=48;
  p_draw_idx draw={.prim=4,.itype=1,.count=3,.instances=1,.ibuf=(uintptr_t)arena+512};
+ if(!strcmp(argv[2],"delayed"))setenv("DM_VK_DRAW_PACKET_AT","43",1);
  draw_packet(&draw); // wrong shader must not consume the one-shot request
  vs.key=0x123;
+ if(!strcmp(argv[2],"delayed")) {
+  draw_packet(&draw);
+  char path[1200];snprintf(path,sizeof path,"%s/draw_packet.json",argv[1]);
+  FILE *early=fopen(path,"rb");if(early){fclose(early);return 3;}
+  g_tex_frame=43;
+ }
+
  if(!strcmp(argv[2],"large"))S.vbuf[0].size=2*1024*1024;
  draw_packet(&draw);
  memset(arena,0,sizeof arena);draw_packet(&draw); // must not overwrite the packet
@@ -56,16 +65,18 @@ int main(int argc,char **argv) {
         with tempfile.TemporaryDirectory() as folder:
             p=Path(folder);(p/'packet.c').write_text(program)
             subprocess.run(['cc','-std=c11','-Wall','-Wextra','-Werror','-I',str(ROOT/'nxnative/dm/android'),str(p/'packet.c'),'-o',str(p/'packet')],check=True)
-            for mode in ['good','large']:
+            for mode in ['good','large','delayed']:
                 out=p/mode;out.mkdir()
                 subprocess.run([str(p/'packet'),str(out),mode],check=True)
                 data=json.loads((out/'draw_packet.json').read_text())
                 self.assertEqual(data['vertex_shader'],'0000000000000123')
-                self.assertEqual(data['present'],42)
+                self.assertEqual(data['present'],43 if mode=='delayed' else 42)
                 self.assertEqual(data['attributes'][1],{'location':4,'format':37,'stream':3,'offset':4})
                 self.assertEqual(data['uniforms'][0]['register'],4)
                 self.assertEqual((out/'draw_packet_uniform_04.bin').read_bytes(),bytes([0x7b])+bytes(range(1,48)))
                 self.assertEqual((out/'draw_packet_indices.bin').read_bytes(),bytes(range(6)))
-                self.assertEqual(data['complete'],mode=='good')
-                if mode=='good':self.assertEqual((out/'draw_packet_stream_00.bin').read_bytes(),bytes(range(128,176)))
+                self.assertEqual(data['uniforms'][1]['stage'],1)
+                self.assertEqual((out/'draw_packet_fragment_uniform_04.bin').read_bytes(),bytes([0x7b])+bytes(range(129,160)))
+                self.assertEqual(data['complete'],mode!='large')
+                if mode!='large':self.assertEqual((out/'draw_packet_stream_00.bin').read_bytes(),bytes(range(128,176)))
                 else:self.assertFalse((out/'draw_packet_stream_00.bin').exists())

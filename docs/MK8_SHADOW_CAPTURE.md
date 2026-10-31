@@ -103,3 +103,52 @@ python3 devtools/capture_menu.py restore --scene shadows --shadow-test map-off
 If the silhouette disappears, the resolve or its consumption is implicated;
 that alone does not prove which is incorrect. If it persists, focus on the
 other draws rather than treating removal of shadow-map sampling as a fix.
+
+## Capture shadow resolve inputs without disabling rendering
+
+Use `--shadow-test uniforms` for the next investigation. This requires an APK
+rebuilt from the extended diagnostic source (same Turnip ZIP and signing key),
+but no shader regeneration. Keep normal shadow rendering enabled and retain
+working Turnip/CPU BC settings. Any synchronous pipeline settings already in
+place are preserved by this capture and its restoration.
+
+```bash
+git pull --ff-only
+# Rebuild/reinstall the APK using the existing Turnip-enabled port command.
+python3 devtools/capture_menu.py start --scene shadows --shadow-test uniforms
+```
+
+Repeat the Time Trials positioning described above and keep the affected view
+open. After about six minutes from launch:
+
+```bash
+python3 devtools/capture_menu.py collect --scene shadows --shadow-test uniforms
+```
+
+Send `work/mk8-shadows-uniforms-capture/mk8-shadows-uniforms-diagnostics.zip`.
+The helper restores the pre-capture settings after collection. Use matching
+`--output DIRECTORY` options on both commands for another attempt. Cancellation
+uses `restore --scene shadows --shadow-test uniforms` with the same directory.
+
+This preserves the normal rendering operation and collects:
+
+- A delayed CPU replay packet for resolve vertex shader b2cfa260c7494f18, with
+  separate vertex and fragment constant buffers. `stage` distinguishes buffer
+  entries; existing vertex buffer filenames stay compatible. Each blob remains
+  bounded to 1 MiB. The packet reflects intended CPU replay data, not GPU UBO
+  readback, and is attempted once at/after present 9000.
+- The fragment shader 6aa6c36ed6065b7d's binding 2 source texture. The observed
+  2048x2048 RG32F image is copied exactly, without half-float conversion, and
+  written as interleaved float pairs in a pass `.f32` sidecar. This diagnostic
+  source path accepts a single-layer RG32F image up to 64 MiB. Its pass number
+  is -100, distinct from the output image index in the filename.
+- Ordinary pass/depth outputs plus exact `.rgba8` bytes for RGBA8 targets,
+  retaining the alpha channel that PPM previews omit. The trace supplies image
+  dimensions and format. RG32F/RG16F PPM previews use a signed-field display
+  scale; numerical analysis must use the `.f32` files, not those preview colours.
+
+The collector rejects incomplete/mistimed shader packets, requires the fragment
+constant buffer, and collects only files recorded by the new run's log. These
+inputs support a CPU reference of the shadow resolve and comparison against
+its output mask; they do not alone establish that uploaded GPU UBO bytes match
+the CPU view. No shadow compatibility patch is enabled by these switches.

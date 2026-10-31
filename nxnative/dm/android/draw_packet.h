@@ -1,5 +1,6 @@
 // Opt-in, bounded CPU replay snapshot of one indexed draw; not a GPU readback.
-// Included after replay state is declared. The packet is for offline vertex analysis.
+// Included after replay state is declared. Vertex and fragment uniforms are
+// saved separately; DM_VK_DRAW_PACKET_AT delays capture until the requested present.
 #pragma once
 static int packet_blob(const char *root, const char *name, uint64_t address, uint64_t size, int shadow) {
     if (!address || !size || size > 1024*1024 || !vk_pool_of(address,size)) return 0;
@@ -14,9 +15,9 @@ static int packet_blob(const char *root, const char *name, uint64_t address, uin
     return ok;
 }
 static void draw_packet(const p_draw_idx *d) {
-    static int done;static uint64_t requested;static int init;
-    if (!init) {const char *e=getenv("DM_VK_DRAW_PACKET");requested=e?strtoull(e,NULL,16):0;init=1;}
-    if (!requested || done || !S.sh[0] || S.sh[0]->key!=requested || S.rast_discard || !S.rt_has_col[0] || !S.sh[1] || d->ind || d->count<=0 || d->itype<0 || d->itype>2) return;
+    static int done;static uint64_t requested,first_present;static int init;
+    if (!init) {const char *e=getenv("DM_VK_DRAW_PACKET");requested=e?strtoull(e,NULL,16):0;e=getenv("DM_VK_DRAW_PACKET_AT");first_present=e?strtoull(e,NULL,10):0;init=1;}
+    if (!requested || done || g_tex_frame<first_present || !S.sh[0] || S.sh[0]->key!=requested || S.rast_discard || !S.rt_has_col[0] || !S.sh[1] || d->ind || d->count<=0 || d->itype<0 || d->itype>2) return;
     done=1;const char *root=getenv("DM_ROOT");if (!root) root=".";
     char path[1200];snprintf(path,sizeof path,"%s/draw_packet.json",root);FILE *f=fopen(path,"wb");
     if (!f) {VKLOG("[RED] draw packet: cannot open manifest");return;}
@@ -36,13 +37,15 @@ static void draw_packet(const p_draw_idx *d) {
     uint64_t index_size=(uint64_t)d->count*(d->itype==0?1:d->itype==1?2:4);
     int saved=packet_blob(root,"draw_packet_indices.bin",d->ibuf,index_size,0);ok&=saved;
     fprintf(f,"],\"indices_saved\":%s,\"uniforms\":[",saved?"true":"false");comma=0;
-    vkshader_t *vs=S.sh[0];
-    for (int i=0;i<vs->nbind;i++) {
-        const dmsv_bind *b=&vs->b[i];if (b->kind!=RK_CBUF || b->reg<0 || b->reg>=16) continue;
-        uint64_t address=S.ubo[0][b->reg].addr,size=S.ubo[0][b->reg].size;
-        char name[80];snprintf(name,sizeof name,"draw_packet_uniform_%02d.bin",b->reg);
+    for (int stage=0;stage<2;stage++) {
+      vkshader_t *shader=S.sh[stage];if (!shader) continue;
+      for (int i=0;i<shader->nbind;i++) {
+        const dmsv_bind *b=&shader->b[i];if (b->kind!=RK_CBUF || b->reg<0 || b->reg>=16) continue;
+        uint64_t address=S.ubo[stage][b->reg].addr,size=S.ubo[stage][b->reg].size;
+        char name[80];snprintf(name,sizeof name,stage?"draw_packet_fragment_uniform_%02d.bin":"draw_packet_uniform_%02d.bin",b->reg);
         saved=packet_blob(root,name,address,size,1);ok&=saved;
-        fprintf(f,"%s{\"binding\":%u,\"register\":%d,\"size\":%llu,\"saved\":%s,\"file\":\"%s\"}",comma?",":"",b->binding,b->reg,(unsigned long long)size,saved?"true":"false",name);comma=1;
+        fprintf(f,"%s{\"stage\":%d,\"binding\":%u,\"register\":%d,\"size\":%llu,\"saved\":%s,\"file\":\"%s\"}",comma?",":"",stage,b->binding,b->reg,(unsigned long long)size,saved?"true":"false",name);comma=1;
+    }
     }
     fprintf(f,"],\"complete\":%s}\n",ok?"true":"false");if (fclose(f)) ok=0;
     VKLOG("%sdraw packet: shader %016llx, present %llu, %d indices; %s/draw_packet.json (CPU replay data)",ok?"":"[RED] ",(unsigned long long)requested,(unsigned long long)g_tex_frame,d->count,root);

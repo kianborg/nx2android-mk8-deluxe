@@ -10,7 +10,7 @@ import subprocess
 import zipfile
 
 PACKAGE = 'org.nx2a.t0100152000022000'
-PREFIXES = ('DM_VK_PASSDUMP', 'DM_VK_TRACE_', 'DM_VK_SHOT', 'DM_VK_TEXDUMP')
+PREFIXES = ('DM_VK_PASSDUMP', 'DM_VK_TRACE_', 'DM_VK_SHOT', 'DM_VK_TEXDUMP', 'DM_VK_DRAW_PACKET')
 
 
 def capture_env(original, frame, shadow_test='baseline'):
@@ -20,6 +20,11 @@ def capture_env(original, frame, shadow_test='baseline'):
     if shadow_test == 'map-off':
         rows = [row for row in rows if row.strip().split('=', 1)[0] != 'DM_VK_X_SKIPVS']
         rows.append('DM_VK_X_SKIPVS=b2cfa260c7494f18')
+    if shadow_test == 'uniforms':
+        if any(row.strip().startswith('DM_VK_X_SKIPVS=') and row.split('=',1)[1].strip() for row in rows):
+            raise ValueError('Restore the map-off experiment before capturing normal shadow inputs.')
+        rows += ['DM_VK_DRAW_PACKET=b2cfa260c7494f18', f'DM_VK_DRAW_PACKET_AT={frame}',
+                 'DM_VK_PASSDUMP_RGBA=1', 'DM_VK_TEXDUMP_SHADER=6aa6c36ed6065b7d', 'DM_VK_TEXDUMP_BINDING=2']
     rows += [f'DM_VK_TRACE_AT={frame}', 'DM_VK_TRACE_FRAME=*',
              f'DM_VK_PASSDUMP={frame}', 'DM_VK_PASSDUMP_FRAMES=1',
              f'DM_VK_SHOT={frame},{frame+2}']
@@ -27,7 +32,7 @@ def capture_env(original, frame, shadow_test='baseline'):
 
 
 def pass_files(log, frame):
-    records = re.findall(r'pass dump (\d+) is the submission\'s pass (\d+) \(present (\d+)\)', log)
+    records = re.findall(r'pass dump (\d+) is the submission\'s pass (-?\d+) \(present (\d+)\)', log)
     if not records or not any(int(present) >= frame for _, _, present in records):
         raise ValueError('Capture has not reached the scheduled frame; keep the affected scene visible and retry collect.')
     if any(not frame <= int(present) <= frame+8 for _, _, present in records):
@@ -39,17 +44,36 @@ def pass_files(log, frame):
     if 'frame trace begins at present ' not in log:
         raise ValueError('No frame trace found; keep the log for inspection.')
     files = [f'pass_{i:02d}.ppm' for i in sorted(indices)]
-    depths = {int(i) for i in re.findall(r'pass dump (\d+): depth ', log)}
+    depths = {int(i) for i in re.findall(r'pass dump (\d+): (?:depth |[^\n]*\bRG(?:16|32)F,)', log)}
     files += [f'pass_{i:02d}.ppm.f32' for i in sorted(indices & depths)]
+    raw = {int(i) for i in re.findall(r'pass dump (\d+) raw RGBA8 → ', log)}
+    files += [f'pass_{i:02d}.ppm.rgba8' for i in sorted(indices & raw)]
     return files
+
+
+def packet_files(manifest, frame):
+    if (not manifest.get('complete') or not frame <= manifest.get('present', -1) <= frame+8
+            or manifest.get('vertex_shader') != 'b2cfa260c7494f18'
+            or manifest.get('fragment_shader') != '6aa6c36ed6065b7d'):
+        raise ValueError('Shadow packet is incomplete, mistimed or targets the wrong shaders; keep the log for inspection.')
+    rows = manifest.get('streams', [])+manifest.get('uniforms', [])
+    if len(rows)>64 or not any(row.get('stage')==1 and row.get('register')==3 for row in manifest.get('uniforms', [])):
+        raise ValueError('Missing fragment uniforms: rebuild the APK with the extended packet capture.')
+    files = ['draw_packet.json', 'draw_packet_indices.bin']
+    for row in rows:
+        name=row.get('file','')
+        if not row.get('saved') or not 0<row.get('size',0)<=1024*1024 or not re.fullmatch(r'draw_packet_[a-z_0-9]+\.bin',name):
+            raise ValueError('Invalid or missing packet blob.')
+        files.append(name)
+    return list(dict.fromkeys(files))
 
 
 def main():
     ap = argparse.ArgumentParser(description=__doc__)
     ap.add_argument('action', choices=['start', 'collect', 'restore'])
     ap.add_argument('--scene', choices=['menu', 'shadows'], default='menu')
-    ap.add_argument('--shadow-test', choices=['baseline', 'map-off'], default='baseline',
-                    help='map-off skips only the captured shadow-map resolve vertex shader; diagnostic only')
+    ap.add_argument('--shadow-test', choices=['baseline', 'map-off', 'uniforms'], default='baseline',
+                    help='uniforms captures normal shadow inputs (updated APK); map-off is the earlier inconclusive skip experiment')
     ap.add_argument('--output', type=Path)
     ap.add_argument('--frame', type=int, help='capture present (default: menu 6000, shadows 9000)')
     ap.add_argument('--adb', default='adb')
@@ -60,7 +84,7 @@ def main():
     if args.frame is None:
         args.frame = 9000 if args.scene == 'shadows' else 6000
     if args.output is None:
-        suffix = '-map-off' if args.shadow_test == 'map-off' else ''
+        suffix = '' if args.shadow_test == 'baseline' else '-'+args.shadow_test
         args.output = Path(f'work/mk8-{args.scene}{suffix}-capture')
     if args.frame < 300:
         ap.error('--frame must be at least 300')
@@ -100,6 +124,8 @@ def main():
         if args.scene == 'shadows':
             if args.shadow_test == 'map-off':
                 print('DIAGNOSTIC: the shadow-map resolve draw is disabled. This is not a permanent fix.')
+            if args.shadow_test == 'uniforms':
+                print('Capturing normal shadow inputs, including vertex/fragment uniforms and mask RGBA. Requires updated APK.')
             print('Choose Time Trials, Mario Kart Stadium. Drive onto the banked antigravity section.')
             print('Stop where the cyan shadow is visible; keep the race view open without pausing.')
             print('The default delay is 5 minutes at 30 FPS, 3.75 minutes at 40 FPS.')
@@ -123,8 +149,15 @@ def main():
             name = f'frame_{frame:06d}.ppm'
             run('pull', root+'/'+name, str(out/name))
             files.append(name)
+        if meta.get('shadow_test') == 'uniforms':
+            run('pull', root+'/draw_packet.json', str(out/'draw_packet.json'))
+            extra = packet_files(json.loads((out/'draw_packet.json').read_text()), meta['frame'])
+            for name in extra:
+                if name != 'draw_packet.json':
+                    run('pull', root+'/'+name, str(out/name))
+            files += extra
         (out/'screen.png').write_bytes(run('exec-out', 'screencap', '-p'))
-        variant = '-map-off' if meta.get('shadow_test') == 'map-off' else ''
+        variant = '' if meta.get('shadow_test', 'baseline') == 'baseline' else '-'+meta['shadow_test']
         archive_path = out/f"mk8-{meta.get('scene', 'menu')}{variant}-diagnostics.zip"
         with zipfile.ZipFile(archive_path, 'x', zipfile.ZIP_DEFLATED) as z:
             for name in files+['log.txt', 'screen.png', 'capture.json', 'capture-env.txt']:
