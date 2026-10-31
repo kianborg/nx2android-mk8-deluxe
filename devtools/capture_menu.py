@@ -57,7 +57,7 @@ def packet_files(manifest, frame):
             or manifest.get('fragment_shader') != '6aa6c36ed6065b7d'):
         raise ValueError('Shadow packet is incomplete, mistimed or targets the wrong shaders; keep the log for inspection.')
     rows = manifest.get('streams', [])+manifest.get('uniforms', [])
-    if len(rows)>64 or not any(row.get('stage')==1 and row.get('register')==3 for row in manifest.get('uniforms', [])):
+    if len(rows)>64 or not any(row.get('stage')==1 and row.get('binding')==4 for row in manifest.get('uniforms', [])):
         raise ValueError('Missing fragment uniforms: rebuild the APK with the extended packet capture.')
     files = ['draw_packet.json', 'draw_packet_indices.bin']
     for row in rows:
@@ -156,6 +156,14 @@ def main():
                 if name != 'draw_packet.json':
                     run('pull', root+'/'+name, str(out/name))
             files += extra
+            # The full pass archive can exceed upload limits. Once the pass
+            # files have already been sent, this small ZIP supplies just the
+            # missing CPU packet, plus trace metadata tying it to the capture.
+            inputs = out/'mk8-shadow-inputs.zip'
+            with zipfile.ZipFile(inputs, 'x', zipfile.ZIP_DEFLATED) as z:
+                for name in extra+['log.txt', 'capture.json']:
+                    z.write(out/name, name)
+            print(f'Small shadow-input archive: {inputs}')
         (out/'screen.png').write_bytes(run('exec-out', 'screencap', '-p'))
         variant = '' if meta.get('shadow_test', 'baseline') == 'baseline' else '-'+meta['shadow_test']
         archive_path = out/f"mk8-{meta.get('scene', 'menu')}{variant}-diagnostics.zip"

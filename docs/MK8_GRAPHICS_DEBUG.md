@@ -502,3 +502,31 @@ bounded packet blobs, collection of negative-numbered sampled-texture passes,
 raw sidecars and rejection of unsafe/missing packet files. The full suite passes
 106 tests and the Android release library compiles 142 sources with no failures.
 Phone validation of the new diagnostic capture remains pending.
+
+## Uniform capture recovered from the user's 7z archive
+
+The uploaded mk8-shadows-uniforms-capture.7z decompresses successfully. It
+contains a complete frame-9000 resolve packet manifest, pass/depth data, exact
+2048x2048 RG32F input and raw RGBA8 masks. The packet identifies the intended
+vertex/fragment pair, six indices and one 128-byte vertex stream. Both stage
+constant buffers were saved at 608 bytes, but their blobs were not pulled.
+
+The collector incorrectly required fragment register 3, inferred from a shader
+variable name. The actual reflected fragment binding is 4 and its runtime
+register is 0. That faulty validation rejected a valid packet before pulling
+its four binary files. Validation now checks stage 1 / binding 4, independently
+of register numbering; an exact structural regression covers this manifest.
+No runtime or shader rebuild is needed for this correction.
+
+Re-running collect with the same uniforms capture directory retrieves the
+saved packet blobs and also writes a small mk8-shadow-inputs.zip containing
+the packet, trace and capture metadata. Only this small archive is needed next;
+the large pass data is already available. Avoid relaunching the game before
+retrieval so another armed capture cannot replace the saved files.
+
+The recovered RG32F texture has finite nonconstant values (R 0.18205562..1,
+G 0.03318596..1), so it is not an empty input. The post-resolve RGBA mask has
+constant red 128, varying green/blue and alpha 255, consistent with independent
+mask channels rather than directly displayed surface colours. These facts do
+not establish why subsequent material shading produces the cyan silhouette.
+The missing stage uniforms are still needed for the planned numeric comparison.

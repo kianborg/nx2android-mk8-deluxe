@@ -152,3 +152,11 @@ constant buffer, and collects only files recorded by the new run's log. These
 inputs support a CPU reference of the shadow resolve and comparison against
 its output mask; they do not alone establish that uploaded GPU UBO bytes match
 the CPU view. No shadow compatibility patch is enabled by these switches.
+
+If collection from the extended capture reported missing fragment uniforms,
+update the source and rerun the **collect** command for the same directory.
+The earlier collector incorrectly required register 3; the shader's constants
+are at fragment binding 4 / register 0. An already completed capture does not
+need another APK rebuild or race run to recover those files. Collection now
+also creates `mk8-shadow-inputs.zip`, a small packet-and-log archive suitable
+for upload when the pass images have already been supplied separately.

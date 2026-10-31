@@ -70,12 +70,26 @@ class MenuCaptureTests(unittest.TestCase):
     def test_packet_collection_requires_fragment_inputs_and_safe_filenames(self):
         packet = {'complete': True, 'present': 9000, 'vertex_shader': 'b2cfa260c7494f18',
                   'fragment_shader': '6aa6c36ed6065b7d', 'streams': [],
-                  'uniforms': [{'stage': 1, 'register': 3, 'saved': True, 'size': 608,
-                                'file': 'draw_packet_fragment_uniform_03.bin'}]}
-        self.assertIn('draw_packet_fragment_uniform_03.bin', capture.packet_files(packet, 9000))
+                  'uniforms': [{'stage': 1, 'binding': 4, 'register': 0, 'saved': True, 'size': 608,
+                                'file': 'draw_packet_fragment_uniform_00.bin'}]}
+        self.assertIn('draw_packet_fragment_uniform_00.bin', capture.packet_files(packet, 9000))
         packet['uniforms'][0]['file'] = '../outside.bin'
         with self.assertRaises(ValueError):
             capture.packet_files(packet, 9000)
         packet['uniforms'] = []
+        with self.assertRaises(ValueError):
+            capture.packet_files(packet, 9000)
+
+
+    def test_actual_resolve_packet_uses_fragment_binding_four_register_zero(self):
+        packet = {'complete': True, 'present': 9000, 'vertex_shader': 'b2cfa260c7494f18',
+                  'fragment_shader': '6aa6c36ed6065b7d', 'streams': [
+                      {'saved': True, 'size': 128, 'file': 'draw_packet_stream_00.bin'}],
+                  'uniforms': [
+                      {'stage': 0, 'binding': 1, 'register': 0, 'size': 608, 'saved': True, 'file': 'draw_packet_uniform_00.bin'},
+                      {'stage': 1, 'binding': 4, 'register': 0, 'size': 608, 'saved': True, 'file': 'draw_packet_fragment_uniform_00.bin'}]}
+        self.assertEqual(capture.packet_files(packet, 9000), ['draw_packet.json', 'draw_packet_indices.bin',
+                         'draw_packet_stream_00.bin', 'draw_packet_uniform_00.bin', 'draw_packet_fragment_uniform_00.bin'])
+        packet['uniforms'][1]['binding'] = 3
         with self.assertRaises(ValueError):
             capture.packet_files(packet, 9000)
