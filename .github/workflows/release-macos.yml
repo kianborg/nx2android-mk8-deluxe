@@ -1,4 +1,4 @@
-# Builds the macOS bundle (packaging/build_bundle.py) and attaches it to each published release, beside the Windows zip the maintainer uploads.
+# Builds the macOS bundle (packaging/build_bundle.py) and attaches it to each published release, beside the Windows zip (release-windows.yml).
 name: macOS release
 
 on:
