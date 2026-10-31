@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Back up MK8 settings and test synchronous pipeline compilation; restore without losing newer edits."""
+"""Back up MK8 settings for a rendering comparison; restore without losing newer edits."""
 import argparse
 from pathlib import Path
 import subprocess
@@ -8,26 +8,38 @@ PACKAGE = 'org.nx2a.t0100152000022000'
 REMOTE = f'/sdcard/Android/data/{PACKAGE}/files/env.txt'
 
 
-def sync_settings(original):
+def comparison_settings(original, test='pipelines'):
     rows = original.decode('utf-8').splitlines()
     settings = dict(row.strip().split('=', 1) for row in rows if '=' in row and not row.lstrip().startswith('#'))
     if settings.get('DM_VK_DRIVER') != 'turnip' or settings.get('DM_VK_BC_DECODE') != '1':
         raise ValueError('Expected the working Turnip and CPU BC settings; nothing changed.')
     if settings.get('DM_VK_X_SKIPVS', '').strip():
         raise ValueError('Restore the shadow-map-off experiment before this comparison; nothing changed.')
-    rows = [row for row in rows if row.strip().split('=', 1)[0] not in ('DM_VK_ASYNC_PIPE', 'DM_VK_NOPREWARM')]
-    return ('\n'.join(rows)+'\nDM_VK_ASYNC_PIPE=0\nDM_VK_NOPREWARM=1\n').encode()
+    if test == 'wheel-depth':
+        changes = {'DM_VK_FDZ': '0'}
+    elif test == 'pipelines':
+        changes = {'DM_VK_ASYNC_PIPE': '0', 'DM_VK_NOPREWARM': '1'}
+    else:
+        raise ValueError('Unknown comparison.')
+    rows = [row for row in rows if row.strip().split('=', 1)[0] not in changes]
+    rows += [f'{key}={value}' for key, value in changes.items()]
+    return ('\n'.join(rows)+'\n').encode()
+
+
+def sync_settings(original):
+    return comparison_settings(original, 'pipelines')
 
 
 def main():
     ap = argparse.ArgumentParser(description=__doc__)
     ap.add_argument('action', choices=['start', 'restore'])
-    ap.add_argument('--output', type=Path, default=Path('work/mk8-sync-pipeline-test'))
+    ap.add_argument('--test', choices=['pipelines', 'wheel-depth'], default='pipelines')
+    ap.add_argument('--output', type=Path)
     ap.add_argument('--adb', default='adb')
     ap.add_argument('--serial')
     a = ap.parse_args()
     adb = [a.adb]+(['-s', a.serial] if a.serial else [])
-    out = a.output.resolve()
+    out = (a.output or Path('work/mk8-wheel-depth-test' if a.test=='wheel-depth' else 'work/mk8-sync-pipeline-test')).resolve()
 
     def run(*parts):
         return subprocess.run(adb+list(parts), check=True, capture_output=True).stdout
@@ -35,12 +47,18 @@ def main():
     if a.action == 'start':
         out.mkdir(parents=True, exist_ok=False)
         run('pull', REMOTE, str(out/'env-before.txt'))
-        updated = sync_settings((out/'env-before.txt').read_bytes())
+        updated = comparison_settings((out/'env-before.txt').read_bytes(), a.test)
         (out/'env-test.txt').write_bytes(updated)
         run('shell', 'am', 'force-stop', PACKAGE)
         run('push', str(out/'env-test.txt'), REMOTE)
-        print('Synchronous test enabled. Open the game and enter Time Trials normally.')
-        print('Compilation stalls may increase. Caches and saves were not removed.')
+        if a.test == 'wheel-depth':
+            print('Fragment-depth workaround disabled for comparison (DM_VK_FDZ=0).')
+            print('Open Time Trials and observe the wheel illumination at the same stationary antigravity location.')
+            print('Report whether illumination is steady, disappears, or still flickers. This is not a confirmed fix.')
+        else:
+            print('Synchronous test enabled. Open the game and enter Time Trials normally.')
+            print('Compilation stalls may increase.')
+        print('Caches and saves were not removed.')
     else:
         current = run('exec-out', 'cat', REMOTE)
         if current.replace(b'\r\n', b'\n') != (out/'env-test.txt').read_bytes().replace(b'\r\n', b'\n'):

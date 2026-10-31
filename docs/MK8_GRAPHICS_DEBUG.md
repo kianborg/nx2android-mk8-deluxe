@@ -583,3 +583,45 @@ to a particular draw. A short recording with a stationary kart/camera should
 first distinguish wheel geometry, cyan glow, road reflections and overlapping
 transparent effects. Keep the confirmed Turnip/CPU BC and swizzle fixes; do not
 apply a new depth, blend or driver workaround without that evidence.
+
+## Direct recording: antigravity illumination flicker
+
+The user supplied mk8-wheels.mp4 (2400x1080, 291 video frames over about 9.76 s).
+It confirms that the changing wheel illumination is present in direct screen
+output, not solely in the earlier filmed-display clip. Consecutive frames show
+changes in cyan illumination on the tire bodies/nearby kart surfaces while
+silhouettes and rim lines remain stable. The recording alone cannot identify
+the responsible pass or distinguish an incorrectly animated light from a
+GPU depth/synchronization problem.
+
+The earlier trace identifies a relevant half-resolution local-light pass:
+fragment 0722cc0403877a4e, 480x270, two colour targets, depth GREATER, and the
+runtime's fragment-depth variant enabled. Its depth attachment was written by
+a shader in the preceding downsample. The automatic variant writes FragCoord.z
+to FragDepth to address Adreno LRZ issues; it is also selected with the current
+Turnip driver. That is a concrete candidate for a one-switch comparison, not
+evidence that the variant causes this flicker.
+
+No APK rebuild is needed for this comparison:
+
+```bash
+git pull --ff-only
+python3 devtools/pipeline_stability.py start --test wheel-depth
+```
+
+This backs up env.txt and changes only DM_VK_FDZ to 0, preserving the existing
+pipeline switches, Turnip and CPU BC configuration. Reopen Time Trials, stop
+at the same antigravity position and report whether the illumination remains
+visible and steady, disappears entirely, or still flickers. A missing effect
+is not a successful fix. There is no six-minute pass-dump wait for this test.
+Restore with:
+
+```bash
+python3 devtools/pipeline_stability.py restore --test wheel-depth
+```
+
+Restoration refuses to overwrite newer settings; the original backup is in
+work/mk8-wheel-depth-test/env-before.txt. The helper's one-switch preservation
+and invalid-test rejection are regression-tested. A new random crash was also
+reported alongside the first wheel clip; no new crash evidence has been
+provided with the direct recording, so it remains a separate open report.

@@ -23,3 +23,16 @@ class PipelineStability(unittest.TestCase):
                          b'DM_VK_DRIVER=turnip\nDM_VK_BC_DECODE=1\nDM_VK_X_SKIPVS=b2cfa260c7494f18\n'):
             with self.assertRaises(ValueError):
                 tool.sync_settings(original)
+
+
+    def test_wheel_depth_comparison_changes_only_the_depth_workaround(self):
+        original = (b'DM_VK_DRIVER=turnip\nDM_VK_BC_DECODE=1\nDM_LANG=en-US\n'
+                    b'DM_VK_ASYNC_PIPE=0\nDM_VK_NOPREWARM=1\nDM_VK_FDZ=1\n')
+        updated = tool.comparison_settings(original, 'wheel-depth')
+        self.assertEqual(updated, original.replace(b'DM_VK_FDZ=1', b'DM_VK_FDZ=0'))
+        self.assertEqual(updated.count(b'DM_VK_FDZ='), 1)
+        self.assertNotIn(b'DM_VK_X_SKIPVS', updated)
+
+    def test_unknown_comparison_is_rejected(self):
+        with self.assertRaises(ValueError):
+            tool.comparison_settings(b'DM_VK_DRIVER=turnip\nDM_VK_BC_DECODE=1\n', 'unknown')
