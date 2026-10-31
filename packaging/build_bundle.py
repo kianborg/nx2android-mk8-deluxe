@@ -29,7 +29,7 @@ def main():
         (APP / dst).parent.mkdir(parents=True, exist_ok=True); shutil.copy2(ROOT / src, APP / dst)
     shutil.copytree(ROOT / 'docs/images', APP / 'docs/images', dirs_exist_ok=True)   # the README's games table
     ver = subprocess.run(['git', '-C', str(ROOT), 'describe', '--always', '--dirty'], capture_output=True, text=True).stdout.strip() or 'dev'
-    (APP / 'VERSION').write_text(ver + '\n', encoding='utf-8')   # the release check (devtools/port_check.py) records it
+    (APP / 'VERSION').write_text(ver + '\n', encoding='utf-8')   # which commit the bundle was built from
     z = DIST / f'nx2android-{ver}-{PLATFORM}.zip'; z.unlink(missing_ok=True)
     if sys.platform == 'darwin': subprocess.run(['ditto', '-c', '-k', '--keepParent', str(APP), str(z)], check=True)   # keeps the Qt frameworks' symlinks, which zipfile copies as files
     else: shutil.make_archive(str(z.with_suffix('')), 'zip', DIST, 'nx2android')
