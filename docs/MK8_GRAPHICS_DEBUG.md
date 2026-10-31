@@ -401,3 +401,21 @@ Do not delete shader/pipeline caches or app data to force a crash before the
 initial report is examined. Warm-cache success alone cannot prove the fix.
 Keep Turnip and forced CPU BC decoding enabled. Do not combine this comparison
 with the rejected shadow-map-off experiment.
+
+
+## First crash-history report
+
+Android's package-specific exit history records EXIT_SELF/status 139 for the
+reported app. The runtime's crash.c catches signals and calls `_exit(128+sig)`,
+so this is consistent with a caught SIGSEGV, not proof of its faulting module or
+of background compilation as the cause. The collected Android native crash
+traces belong to different packages and must not be attributed to MK8. A much
+earlier low-memory record does not establish the cause of this latest exit.
+The collected current game log belongs to a later running session and contains
+no crash dump. Its env.txt still enables prewarm/async defaults; the suggested
+synchronous comparison has not been established by this report.
+
+The Android front end rotates log.txt to log.prev.txt on launch. The collector
+now includes that previous log, which was omitted initially. Retrieve it before
+another launch overwrites it. No runtime crash fix is justified until the
+faulting address/thread or equivalent evidence is available.

@@ -22,6 +22,7 @@ def main():
     adb = [args.adb]+(['-s', args.serial] if args.serial else [])
     commands = {
         'log.txt': ['exec-out', 'cat', ROOT+'/log.txt'],
+        'log.prev.txt': ['exec-out', 'cat', ROOT+'/log.prev.txt'],
         'env.txt': ['exec-out', 'cat', ROOT+'/env.txt'],
         'android-crash.txt': ['logcat', '-b', 'crash', '-d', '-t', '2000'],
         'android-exits.txt': ['shell', 'dumpsys', 'activity', 'exit-info', PACKAGE],
