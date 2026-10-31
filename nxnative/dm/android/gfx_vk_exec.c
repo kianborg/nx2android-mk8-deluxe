@@ -1115,6 +1115,7 @@ static int tex_desc_for(int st, const dmsv_bind *b, uint64_t h, VkDescriptorImag
         if (storage && im && vk_fmt(im->nvn_format)->bc_decode) die("[vk] decoded BC storage writes are unsupported");
         if (g_tracing) VKLOG("  texture handle %#llx id %d: %ux%u nvn format %#x target %d serial %llu pool %p+%#llx size %#llx → image %p (%ux%u fmt %d layers %u levels %u) view %p", (unsigned long long)h, tid, t->d.width, t->d.height, t->d.format, t->d.target,
                              (unsigned long long)t->serial, (const void *)t->pool, (unsigned long long)t->off, (unsigned long long)t->L.size, (void *)im, im ? im->w : 0, im ? im->h : 0, im ? im->fmt : 0, im ? im->layers : 0, im ? im->levels : 0, (void *)ii->imageView);
+        if (g_tracing) {char sw[192];void vk_tex_swizzle_describe(const tex_t *,const view_t *,char *,size_t);vk_tex_swizzle_describe(t,v,sw,sizeof sw);VKLOG("  sampled channel mapping: %s",sw);}
         if (im) im->last_use = mtl_last_fence() + 1;
         if (ii->imageView) num = view_num(t, v);
         if (ii->imageView) { g_tvc[ck].epoch = g_set_epoch; g_tvc[ck].gen = g_tex_gen; g_tvc[ck].tid = tid; g_tvc[ck].dim = b->dim; g_tvc[ck].arr = b->flags & 1; g_tvc[ck].v = ii->imageView; g_tvc[ck].im = im; g_tvc[ck].num = num; }

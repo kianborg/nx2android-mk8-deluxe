@@ -530,3 +530,46 @@ constant red 128, varying green/blue and alpha 255, consistent with independent
 mask channels rather than directly displayed surface colours. These facts do
 not establish why subsequent material shading produces the cyan silhouette.
 The missing stage uniforms are still needed for the planned numeric comparison.
+
+## Numeric resolve comparison and texture-view channel correction
+
+The recovered packet contains the two 608-byte stage buffers and the expected
+fullscreen indices/vertices. A scratch NumPy reference follows the captured
+resolve's depth reconstruction, cascade projection, D16 comparison sampling,
+RG32F moment lookup and variance/fade equations. It uses float32 intermediates
+and float64 product-plus-add rounded to float32 for FMA, ordinary bilinear
+weights, and the captured layer-0 depth. It is a numerical reference of these
+equations, not a complete SPIR-V interpreter or bit-exact GPU sampler model.
+
+Against pass_27's raw mask, the near-cascade green channel is within 1.1 byte
+units for 99.82% of near-cascade pixels. All 16,290 captured zero-green shadow
+pixels agree with reference visibility below 0.01. Restricting to nontrivial
+shadow/edge pixels gives 97.33% within that tolerance. The blue variance channel
+is within 1.1 units for 99.14% of the full frame (89.32% in its nontrivial
+region; mean error there 0.64 units). A deliberately reversed screen-Y reference
+matches much worse. These results support correct generation of the core mask
+silhouette and narrow attention to consumption; they do not prove every lookup
+or edge is exact. The depth dump currently reads array layer zero, so this is
+not a validation of the far cascade.
+
+While tracing mask consumption, the Vulkan view code was found to compose the
+texture's selectors with the view's selectors. NVN view selectors override the
+texture selectors; they then map through the selected format's component
+mapping once. The existing Metal implementation follows that rule. A parent
+that replicates red and a view selecting green previously read parent-red
+instead of original-green. For multichannel masks this can select unrelated
+mask values. The correction chooses view selectors when explicitly set,
+otherwise texture selectors, and applies only the format mapping afterward.
+Attachment views retain identity selectors as Vulkan requires. Format-level
+constant alpha and red/blue remaps are preserved.
+
+The regression fails with the prior composed behavior and passes with the
+correction, covering explicit identity overrides, parent fallback, constants,
+format remaps and attachment identity. Full regression: 108 tests passed;
+Android release: 142 sources, zero failures. Sampled-channel selectors are now
+logged in an explicitly traced frame, to establish the actual mappings if a
+future capture is needed. The earlier trace lacks this metadata, so this is a
+validated general semantic fix and a plausible shadow-related candidate, not
+a confirmed resolution of the phone's cyan silhouette. Rebuild/reinstall with
+the same Turnip ZIP/signing key and check the affected race normally first;
+no additional six-minute diagnostic capture is requested yet.
