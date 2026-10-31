@@ -57,7 +57,7 @@ Each game is a profile in `nxnative/dm/games/<title ID>/` with an `android.tsv`:
 
 ## Releases and version numbers
 
-The version is `0.MINOR.PATCH`. A release that only adds games and fixes bugs raises the patch version; a release with any other core change (a new feature or a change in behaviour) raises the minor version. The major version stays 0 while the project is early. A release checks only the games it adds or fixes, not the older ones; a break in an older game is fixed by a later patch release. Details: [RELEASE_CHECK.md](RELEASE_CHECK.md).
+The version is `0.MINOR.PATCH`. A release that only adds games and fixes bugs raises the patch version; a release with any other core change (a new feature or a change in behaviour) raises the minor version. The major version stays 0 while the project is early. A release checks only the games it adds or fixes, not the older ones; a break in an older game is fixed by a later patch release. The version is in `porter/__init__.py`, raised by a commit `chore(release): version <x.y.z>`.
 
 ## Building the bundle
 
