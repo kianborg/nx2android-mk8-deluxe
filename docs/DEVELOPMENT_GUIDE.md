@@ -99,10 +99,4 @@ The commits before 2026-10-28 predate the rule.
 
 ## nxnative
 
-`nxnative/` started as a squashed git subtree of [seedds/nxnative](https://github.com/seedds/nxnative) (upstream 6034fca, 2026-10-24). Since 2026-10-29 it is our own fork: no `git subtree pull`, cherry-pick or merge from upstream. Upstream's profiles are still a good reference when bringing up a game it has; read them and write our own:
-
-```
-git remote add upstream https://github.com/seedds/nxnative.git
-git fetch upstream
-git show upstream/main:dm/games/<title ID>/game.tsv
-```
+`nxnative/` started as a squashed git subtree of [seedds/nxnative](https://github.com/seedds/nxnative) (upstream 6034fca, 2026-10-24). Since 2026-10-29 it is our own fork: no `git subtree pull`, cherry-pick or merge from upstream, and the repository has no `upstream` remote (removed 2026-10-31): `origin` is the only one. Upstream's profiles are still a good reference when bringing up a game it has; read them on GitHub (`https://github.com/seedds/nxnative/tree/main/dm/games/<title ID>`) and write our own.

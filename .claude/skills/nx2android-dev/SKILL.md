@@ -5,7 +5,7 @@ description: How to add a new game profile to nx2android (port another Switch ga
 
 # nx2android: game profiles and the core
 
-nx2android turns a player's own Switch game files into an Android app: `porter` runs the port stages, `gui` draws them, `nxnative/` (a git subtree of seedds/nxnative) holds the engine. Every supported game is a **profile**; everything shared is the **core**. The contract is [docs/ARCHITECTURE.md](../../../docs/ARCHITECTURE.md): read it before changing anything, and keep it true.
+nx2android turns a player's own Switch game files into an Android app: `porter` runs the port stages, `gui` draws them, `nxnative/` (our own fork of seedds/nxnative since 2026-10-29; no `upstream` remote, never pulled from) holds the engine. Every supported game is a **profile**; everything shared is the **core**. The contract is [docs/ARCHITECTURE.md](../../../docs/ARCHITECTURE.md): read it before changing anything, and keep it true.
 
 ## First decide: profile or core?
 
@@ -28,7 +28,7 @@ A fix that only one game needs today is still a core fix when it follows the sem
 - **Keys and game files never enter the repository or the chat.** Game folders live outside the repo (ask the user where; the port writes its build folder beside the game files); print key names, never values.
 - **Measure, then change.** Every fix starts from evidence (a log line, a crash address, a census, a screen recording), and the evidence goes in the comment beside the fix, as the existing code does.
 - **English everywhere; log lines for something unimplemented or wrong start with `[RED] `.**
-- **Keep upstream merges easy.** Changes in `nxnative/dm/{host,gfx,tools,third_party}` stay small and platform differences go behind `__APPLE__` / `__ANDROID__` / `DM_TARGET`. Android-only code belongs in `nxnative/dm/android/`.
+- **Keep the shared core shared.** Changes in `nxnative/dm/{host,gfx,tools,third_party}` keep the iOS paths working and platform differences go behind `__APPLE__` / `__ANDROID__` / `DM_TARGET`. Android-only code belongs in `nxnative/dm/android/`.
 - **Match the surrounding code**: its comment density, naming and dense one-line style.
 - **Tests before committing**: `python -m unittest discover tests` (includes `tests/arch_rules.py`, which enforces ARCHITECTURE.md's layer rules: no game IDs, names or packages in core code, data-only profiles, GUI only over `python -m porter`…). Commit and push only when the user asks; end commit messages with the attribution line the session gives. Messages are Conventional Commits (`fix(vk): …`, `feat(profile): …`, `docs(status): …`; docs/DEVELOPMENT_GUIDE.md's Commit messages), checked by `.githooks/commit-msg`.
 - **Update the docs with the code**: ARCHITECTURE.md when a layer, key or stage changes; README.md's Games table when a status changes (the only place it is kept: docs/PORT_STATUS.md only points there); the profile's `android.tsv` comment header with what was tested.

@@ -10,7 +10,7 @@ porter/  (headless port pipeline, also a CLI)
   │  inputs → extract → rewrite → shaders → host → apk → data pack → [install]
   │  reuses nxnative/scripts/build_ipa_from_nsp.py's steps (imported, not copied)
   ▼
-nxnative/  (git subtree of seedds/nxnative + the Android port)
+nxnative/  (our fork of seedds/nxnative + the Android port)
   ├─ dm/host, dm/gfx, dm/tools        core: Horizon host, NVN layer, rewriter, shader split   (shared with iOS)
   ├─ dm/android                       core: Android runtime (Vulkan backend, front end, build.py, mkapk.py)
   └─ dm/games/<title ID>/             profiles: game.tsv + shader tables (+ patches.py) + android.tsv
@@ -20,7 +20,7 @@ nxnative/  (git subtree of seedds/nxnative + the Android port)
 
 | Layer | Where | Holds | Must not hold |
 |---|---|---|---|
-| **Core, shared** | `nxnative/dm/{host,gfx,tools,third_party}` | What every game and both platforms need. Android differences behind `DM_ANDROID` / `__APPLE__` / `DM_TARGET`. | Game-specific branches. Keep the diff to upstream small: it is merged with `git subtree pull`. |
+| **Core, shared** | `nxnative/dm/{host,gfx,tools,third_party}` | What every game and both platforms need. Android differences behind `DM_ANDROID` / `__APPLE__` / `DM_TARGET`. | Game-specific branches. |
 | **Core, Android runtime** | `nxnative/dm/android/` | Vulkan replay backend (`gfx_vk_*`), the NativeActivity front end (on-screen gamepad, pause menu, settings, text entry with an on-screen keyboard, haptics, shaking the device as shaking the controller, audio, performance hints), the NDK build (`build.py`), the APK writer (`apk/mkapk.py`), the Vulkan shader bundle (`tools/shader_vk.py`), the profile's Android header (`tools/android_profile.py`), the gamepad's layouts (`overlay_default.tsv`: tablet and phone) and its themes (`themes/`: a sprite pack per design, and `themes.tsv`, the table of which game wears which; `themes/README.md`). | Code that depends on a game: no title IDs, game names or per-game branches in code (comments may name the game a rule was found with, as upstream's do). A game that needs something different gets a profile key. |
 | **Game profile** | `nxnative/dm/games/<title ID>/` | Data only: `game.tsv` (upstream keys), shader tables, `patches.py` (per-build rewriter cuts), and `android.tsv` (Android keys, below). | Code paths. |
 | **Port pipeline** | `porter/` | The stages that turn game files into the APK and data pack; the toolchain check; the profile registry; installing over adb. Runs headless. | UI. |
@@ -107,11 +107,11 @@ nx2android/
   tests/                 unit tests (python -m unittest discover tests); arch_rules.py checks this file's layer rules
   requirements.txt       the Python modules the tool needs
   probes/                first on-device probes (research)
-  nxnative/              subtree: engine, Android runtime, profiles
+  nxnative/              our fork: engine, Android runtime, profiles
   RESEARCH.md            feasibility study
 ```
 
-The engine is our own fork since 2026-10-29: no subtree pull from upstream ([DEVELOPMENT_GUIDE.md](DEVELOPMENT_GUIDE.md#nxnative)).
+The engine is our own fork since 2026-10-29: no subtree pull from upstream, and no `upstream` remote ([DEVELOPMENT_GUIDE.md](DEVELOPMENT_GUIDE.md#nxnative)).
 
 ## Adding a game
 
