@@ -36,3 +36,10 @@ class PipelineStability(unittest.TestCase):
     def test_unknown_comparison_is_rejected(self):
         with self.assertRaises(ValueError):
             tool.comparison_settings(b'DM_VK_DRIVER=turnip\nDM_VK_BC_DECODE=1\n', 'unknown')
+
+    def test_wheel_submission_comparison_preserves_depth_and_pipeline_settings(self):
+        original = (b'DM_VK_DRIVER=turnip\nDM_VK_BC_DECODE=1\nDM_VK_FDZ=1\n'
+                    b'DM_VK_ASYNC_PIPE=1\nDM_VK_NOPREWARM=0\nDM_VK_CB_DRAWS=128\n')
+        updated = tool.comparison_settings(original, 'wheel-submit')
+        self.assertEqual(updated, original.replace(b'DM_VK_CB_DRAWS=128', b'DM_VK_CB_DRAWS=0'))
+        self.assertEqual(updated.count(b'DM_VK_CB_DRAWS='), 1)

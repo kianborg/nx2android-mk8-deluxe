@@ -668,3 +668,59 @@ existing pass files may suffice. GPU readbacks/frame shots alter timing, so a
 capture in which flicker disappears cannot alone establish a fix. The next
 analysis compares changing light targets with the final wheel illumination;
 there is not yet a justified runtime flicker patch.
+
+
+### Wheel-light capture received: submission comparison
+
+The returned `mk8-shadows-wheel-light-diagnostics.7z` contains all 16 scheduled
+final frames (9000–9015), 25 intermediate colour dumps, the trace, and the
+original/capture settings. The final frames reproduce the wheel illumination
+change while the rim outlines remain stable. The captured light targets also
+change coverage: some show larger cyan regions on the wheels, others mostly
+thin rings. Thus the difference already exists before final composition;
+this does not yet identify the failing draw or distinguish bad inputs from
+incorrect depth rejection. Only target zero was captured.
+
+The original exact-size capture filter was incomplete. The traced local-light
+pass at present 9000 is 482x271, with scene targets 965x543. Other presents
+produce 480x270 or 640x360 dumps. The game changes render resolution, so missing
+dumps at intermediate dimensions cannot be interpreted as missing passes.
+Do not repeat the same size-filtered capture expecting a complete temporal
+sequence. Pass numbers also move. The final images contain a 1280x720 active
+view in a 1920x1080 image; crops must account for that.
+
+The log reports no missing-program, missing-target, or missing-pipeline draw
+skips through present 9000. The traced light-volume draw uses vertex shader
+35696712904ac390 / fragment shader 0722cc0403877a4e, two R11G11B10 targets
+(array layers 0 and 1), and D32 depth, GREATER test, no depth writes. Its
+fragment-depth workaround is enabled in this capture. The earlier FDZ=0
+comparison still flickered, so neither FDZ setting has established a fix.
+
+The next isolated comparison is ordinary command-buffer splitting. The
+existing renderer comments in `gfx_vk_exec.c:begin_pass` describe transient
+light loss in other games when a later pass reuses depth from before a draw-count
+split, even with LRZ invalidation touches. That is a reason to test this path,
+not evidence that MK8 has the same cause. `--test wheel-submit` changes only
+`DM_VK_CB_DRAWS=0`; required submission boundaries and any explicitly configured
+pass splitting remain. No renderer patch, APK rebuild, cache deletion, or
+additional capture is required for this comparison.
+
+```bash
+git pull --ff-only
+python3 devtools/pipeline_stability.py start --test wheel-submit
+```
+
+Use the same stationary Time Trials antigravity view. Report whether the wheel
+illumination is steady, absent, or still flickers, and any performance change.
+Then restore before further experiments:
+
+```bash
+python3 devtools/pipeline_stability.py restore --test wheel-submit
+```
+
+Successful wheel-light collection already restored its original settings. If
+collection failed, first restore with `capture_menu.py restore --scene shadows
+--shadow-test wheel-light` and the original `--output` if one was specified.
+Use a fresh `--output` for a repeated comparison; preserve earlier backups.
+A positive result would justify investigating split/depth transitions; a
+negative result would leave light inputs, sampling and depth state open.

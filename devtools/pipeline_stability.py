@@ -17,6 +17,8 @@ def comparison_settings(original, test='pipelines'):
         raise ValueError('Restore the shadow-map-off experiment before this comparison; nothing changed.')
     if test == 'wheel-depth':
         changes = {'DM_VK_FDZ': '0'}
+    elif test == 'wheel-submit':
+        changes = {'DM_VK_CB_DRAWS': '0'}
     elif test == 'pipelines':
         changes = {'DM_VK_ASYNC_PIPE': '0', 'DM_VK_NOPREWARM': '1'}
     else:
@@ -33,13 +35,14 @@ def sync_settings(original):
 def main():
     ap = argparse.ArgumentParser(description=__doc__)
     ap.add_argument('action', choices=['start', 'restore'])
-    ap.add_argument('--test', choices=['pipelines', 'wheel-depth'], default='pipelines')
+    ap.add_argument('--test', choices=['pipelines', 'wheel-depth', 'wheel-submit'], default='pipelines')
     ap.add_argument('--output', type=Path)
     ap.add_argument('--adb', default='adb')
     ap.add_argument('--serial')
     a = ap.parse_args()
     adb = [a.adb]+(['-s', a.serial] if a.serial else [])
-    out = (a.output or Path('work/mk8-wheel-depth-test' if a.test=='wheel-depth' else 'work/mk8-sync-pipeline-test')).resolve()
+    default_output = 'work/mk8-sync-pipeline-test' if a.test == 'pipelines' else f'work/mk8-{a.test}-test'
+    out = (a.output or Path(default_output)).resolve()
 
     def run(*parts):
         return subprocess.run(adb+list(parts), check=True, capture_output=True).stdout
@@ -51,7 +54,12 @@ def main():
         (out/'env-test.txt').write_bytes(updated)
         run('shell', 'am', 'force-stop', PACKAGE)
         run('push', str(out/'env-test.txt'), REMOTE)
-        if a.test == 'wheel-depth':
+        if a.test == 'wheel-submit':
+            print('Ordinary draw-count command-buffer splits disabled (DM_VK_CB_DRAWS=0).')
+            print('Open Time Trials and observe the wheel illumination at the same stationary antigravity location.')
+            print('Report whether it is steady, disappears, or still flickers; note any performance change.')
+            print('This is a diagnostic comparison, not a confirmed fix. Other required submission boundaries remain.')
+        elif a.test == 'wheel-depth':
             print('Fragment-depth workaround disabled for comparison (DM_VK_FDZ=0).')
             print('Open Time Trials and observe the wheel illumination at the same stationary antigravity location.')
             print('Report whether illumination is steady, disappears, or still flickers. This is not a confirmed fix.')
