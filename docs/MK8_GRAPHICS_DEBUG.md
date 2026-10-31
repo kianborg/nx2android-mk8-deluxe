@@ -458,3 +458,30 @@ rebuild for future logs; the collector update does not.
 No driver-binary patch is applied: avoiding the cleanup dereference alone would
 not repair failed GPU work. No claim that this explains the antigravity shadow
 issue follows from this crash analysis.
+
+## Extended historical logs and synchronous stability comparison
+
+The follow-up ZIP retrieved Android records for the correct failed PID, 30045,
+but contains only activity/events and startup audit records; no retained Mesa
+submission failure or errno is present. It does not discriminate between
+invalid submitted work, driver failure or a resource problem. Recollecting the
+same historical session is not the next diagnostic step.
+
+A reversible stability comparison is available without an APK rebuild:
+
+```bash
+python3 devtools/pipeline_stability.py start
+```
+
+It backs up the current env.txt, retains Turnip and CPU BC settings, stops the
+app and sets ASYNC_PIPE=0 / NOPREWARM=1. It preserves caches and saves and
+rejects an active shadow-skip experiment. Enter Time Trials normally. A
+successful warm-cache run does not prove a first-run crash fixed; leave the
+configuration in place for ordinary play and collect immediately if it recurs,
+before relaunching. The earlier shader/pass evidence remains available for the
+separate unresolved antigravity issue; this setting is not a claimed shadow fix.
+
+Restore with `python3 devtools/pipeline_stability.py restore`; restoration
+checks that env.txt has not changed since start. Use the same `--output` folder
+for both actions if a fresh backup folder is needed. No pipeline cache clearing
+is requested. The helper's settings preservation and rejection cases are tested.
