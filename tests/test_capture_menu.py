@@ -41,3 +41,15 @@ class MenuCaptureTests(unittest.TestCase):
                "pass dump 02: 1280x720 format 37 → /files/pass_02.ppm\n")
         self.assertEqual(capture.pass_files(log, 9000),
                          ['pass_01.ppm', 'pass_02.ppm', 'pass_01.ppm.f32'])
+
+
+    def test_shadow_map_comparison_changes_only_skip_setting_and_capture_keys(self):
+        original = (b'DM_VK_DRIVER=turnip\nDM_VK_BC_DECODE=1\n'
+                    b'DM_VK_X_SKIPVS=old\nDM_LANG=en-US\n')
+        result = capture.capture_env(original, 9000, 'map-off')
+        self.assertIn(b'DM_VK_DRIVER=turnip\nDM_VK_BC_DECODE=1\n', result)
+        self.assertIn(b'DM_LANG=en-US\n', result)
+        self.assertEqual(result.count(b'DM_VK_X_SKIPVS='), 1)
+        self.assertIn(b'DM_VK_X_SKIPVS=b2cfa260c7494f18\n', result)
+        self.assertIn(b'DM_VK_PASSDUMP=9000\n', result)
+        self.assertIn(b'DM_VK_X_SKIPVS=old\n', capture.capture_env(original, 9000))

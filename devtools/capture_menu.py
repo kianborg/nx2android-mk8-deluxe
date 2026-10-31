@@ -13,10 +13,13 @@ PACKAGE = 'org.nx2a.t0100152000022000'
 PREFIXES = ('DM_VK_PASSDUMP', 'DM_VK_TRACE_', 'DM_VK_SHOT', 'DM_VK_TEXDUMP')
 
 
-def capture_env(original, frame):
+def capture_env(original, frame, shadow_test='baseline'):
     text = original.decode('utf-8')
     rows = [row for row in text.splitlines()
             if not row.strip().split('=', 1)[0].startswith(PREFIXES)]
+    if shadow_test == 'map-off':
+        rows = [row for row in rows if row.strip().split('=', 1)[0] != 'DM_VK_X_SKIPVS']
+        rows.append('DM_VK_X_SKIPVS=b2cfa260c7494f18')
     rows += [f'DM_VK_TRACE_AT={frame}', 'DM_VK_TRACE_FRAME=*',
              f'DM_VK_PASSDUMP={frame}', 'DM_VK_PASSDUMP_FRAMES=1',
              f'DM_VK_SHOT={frame},{frame+2}']
@@ -45,15 +48,20 @@ def main():
     ap = argparse.ArgumentParser(description=__doc__)
     ap.add_argument('action', choices=['start', 'collect', 'restore'])
     ap.add_argument('--scene', choices=['menu', 'shadows'], default='menu')
+    ap.add_argument('--shadow-test', choices=['baseline', 'map-off'], default='baseline',
+                    help='map-off skips only the captured shadow-map resolve vertex shader; diagnostic only')
     ap.add_argument('--output', type=Path)
     ap.add_argument('--frame', type=int, help='capture present (default: menu 6000, shadows 9000)')
     ap.add_argument('--adb', default='adb')
     ap.add_argument('--serial')
     args = ap.parse_args()
+    if args.shadow_test != 'baseline' and args.scene != 'shadows':
+        ap.error('--shadow-test requires --scene shadows')
     if args.frame is None:
         args.frame = 9000 if args.scene == 'shadows' else 6000
     if args.output is None:
-        args.output = Path(f'work/mk8-{args.scene}-capture')
+        suffix = '-map-off' if args.shadow_test == 'map-off' else ''
+        args.output = Path(f'work/mk8-{args.scene}{suffix}-capture')
     if args.frame < 300:
         ap.error('--frame must be at least 300')
     adb = [args.adb] + (['-s', args.serial] if args.serial else [])
@@ -81,19 +89,21 @@ def main():
         original = (out/'env-before.txt').read_bytes()
         if b'DM_VK_DRIVER=turnip' not in original or b'DM_VK_BC_DECODE=1' not in original:
             raise ValueError('Expected working Turnip and CPU BC settings; nothing on the phone was changed.')
-        settings = capture_env(original, args.frame)
+        settings = capture_env(original, args.frame, args.shadow_test)
         (out/'capture-env.txt').write_bytes(settings)
         before = shell('cat', root+'/log.txt')
         (out/'capture.json').write_text(json.dumps({'frame': args.frame,
-            'scene': args.scene, 'previous_log_sha256': hashlib.sha256(before).hexdigest()}, indent=2)+'\n')
+            'scene': args.scene, 'shadow_test': args.shadow_test, 'previous_log_sha256': hashlib.sha256(before).hexdigest()}, indent=2)+'\n')
         shell('am', 'force-stop', PACKAGE)
         run('push', str(out/'capture-env.txt'), root+'/env.txt')
         print(f'Capture armed for present {args.frame}. Open the game manually now.')
         if args.scene == 'shadows':
+            if args.shadow_test == 'map-off':
+                print('DIAGNOSTIC: the shadow-map resolve draw is disabled. This is not a permanent fix.')
             print('Choose Time Trials, Mario Kart Stadium. Drive onto the banked antigravity section.')
             print('Stop where the cyan shadow is visible; keep the race view open without pausing.')
             print('The default delay is 5 minutes at 30 FPS, 3.75 minutes at 40 FPS.')
-            print('After about six minutes run collect --scene shadows; retry if it is not ready.')
+            print('After about six minutes run collect with the same --scene/--shadow-test options; retry if not ready.')
         else:
             print('Go directly to cup selection, select Mushroom Cup and leave that screen open.')
             print('At 40 FPS the default delay is about 2.5 minutes; at 30 FPS about 3.3 minutes.')
@@ -114,7 +124,8 @@ def main():
             run('pull', root+'/'+name, str(out/name))
             files.append(name)
         (out/'screen.png').write_bytes(run('exec-out', 'screencap', '-p'))
-        archive_path = out/f"mk8-{meta.get('scene', 'menu')}-diagnostics.zip"
+        variant = '-map-off' if meta.get('shadow_test') == 'map-off' else ''
+        archive_path = out/f"mk8-{meta.get('scene', 'menu')}{variant}-diagnostics.zip"
         with zipfile.ZipFile(archive_path, 'x', zipfile.ZIP_DEFLATED) as z:
             for name in files+['log.txt', 'screen.png', 'capture.json', 'capture-env.txt']:
                 z.write(out/name, name)

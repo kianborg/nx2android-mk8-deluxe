@@ -323,3 +323,22 @@ sparse staging preserves bundle offsets for the existing validated extractor.
 Tests cover entry bounds, duplicate keys and a mocked ADB-to-ZIP extraction.
 Send the resulting ZIP for the next shader analysis. This is diagnostic data,
 not a shadow workaround.
+
+## Supplied shadow shader analysis
+
+The user supplied all 171 shader keys referenced by the antigravity trace,
+with no missing entries. The common resolve (6aa6c36ed6065b7d) and projected
+mask fragments (eda8130f8a9a7634, be891424dfb3f8e0) pass spirv-val for Vulkan
+1.1 with scalar block layout. Projected masks explicitly write RGB zero and
+compute alpha, matching their destination-darkening blend factors. The resolve
+uses a D16 array comparison sampler and writes independent mask channels;
+coloured intermediate silhouettes are therefore not sufficient evidence of
+incorrect colour output. No validated runtime correction follows from static
+shader inspection alone.
+
+A bounded `--shadow-test map-off` capture now isolates the resolve vertex
+shader through existing runtime skip support, without repacking the APK. See
+[the controlled comparison](MK8_SHADOW_CAPTURE.md#controlled-shadow-map-comparison).
+This is an A/B diagnostic, not a shipped shadow fix. Keep the RGB565 fix and
+working Turnip/CPU BC settings throughout, restoring the diagnostic switch
+after collection.

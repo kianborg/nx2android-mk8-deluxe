@@ -54,3 +54,44 @@ See [the menu capture guide](MK8_MENU_CAPTURE.md) for ADB device selection,
 custom output directories, preservation of newer env.txt edits and retries.
 For another attempt choose a fresh output directory on all three commands.
 Use `start --scene shadows --frame 12000` if navigation needs more time.
+
+## Controlled shadow-map comparison
+
+The captured shadow shaders validate as Vulkan 1.1 SPIR-V. The projected decal
+fragment shaders write zero RGB and compute opacity in alpha. Their recorded
+ZERO / ONE_MINUS_SRC_ALPHA blend is consistent with darkening a channel mask.
+This does not establish that their inputs or subsequent lighting are correct.
+The common shadow-map resolve writes separate values to each mask channel;
+its cyan/purple intermediate appearance is not itself a colour-rendering bug.
+
+To distinguish that resolve path from projected decals and later lighting,
+the helper can arm an explicit A/B experiment using the runtime's existing
+`DM_VK_X_SKIPVS` support. In the supplied frame, vertex shader
+b2cfa260c7494f18 occurs only in the shadow-map resolve draw (fragment
+6aa6c36ed6065b7d). The test skips draws using that vertex shader; projected
+decals, geometry/depth generation and later material draws remain enabled.
+This intentionally removes a rendering operation and is not a permanent fix.
+No APK or shader rebuild is required.
+
+```bash
+python3 devtools/capture_menu.py start --scene shadows --shadow-test map-off
+```
+
+Repeat the Time Trials positioning described above. After about six minutes:
+
+```bash
+python3 devtools/capture_menu.py collect --scene shadows --shadow-test map-off
+```
+
+Send `work/mk8-shadows-map-off-capture/mk8-shadows-map-off-diagnostics.zip`
+and report whether the cyan silhouette vanished, changed, or stayed the same.
+If this output folder already exists, specify a fresh `--output DIRECTORY` on
+both commands. Successful collection restores the pre-test settings. To cancel:
+
+```bash
+python3 devtools/capture_menu.py restore --scene shadows --shadow-test map-off
+```
+
+If the silhouette disappears, the resolve or its consumption is implicated;
+that alone does not prove which is incorrect. If it persists, focus on the
+other draws rather than treating removal of shadow-map sampling as a fix.
