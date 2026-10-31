@@ -16,10 +16,8 @@ class AdaptiveFrameRate(unittest.TestCase):
             self.skipTest('a C compiler is required')
         src = SOURCE.read_text(encoding='utf-8')
         controller = src[src.index('static const int64_t STEPS[]'):src.index('// hle_nvn.c, the first acquire')]
-        # ADPF reporting now sits between controller helpers; it needs Android APIs.
-        start = controller.index('static void hint_report(')
-        end = controller.index('// The frames\' time on screen', start)
-        controller = controller[:start] + controller[end:]
+        hint, shown = controller.index('// The frame\'s work to the CPU hint'), controller.index('// The frames\' time on screen')
+        controller = controller[:hint] + controller[shown:]   # without hint_report: the Android hint API (H, g_hint), called only from dm_perf_frame
         harness = r'''
 #include <assert.h>
 #include <stdint.h>
