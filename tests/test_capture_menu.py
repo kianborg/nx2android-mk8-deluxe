@@ -181,3 +181,15 @@ class MenuCaptureTests(unittest.TestCase):
                 'uniforms':[{'stage':1,'binding':4,'size':224,'saved':True,'file':'draw_packet_fragment_uniform_00.bin'}]}
         self.assertIn('draw_packet_indices.bin',capture.packet_files(packet,9000,wheel=True))
         with self.assertRaises(ValueError):capture.packet_files(packet,9000)
+
+    def test_early_collection_does_not_claim_the_apk_is_outdated(self):
+        log = 'replay up to present 8400: draws 123\n'
+        with self.assertRaisesRegex(ValueError, 'Keep the race open and retry collect'):
+            capture.motion_files(log,9000,16)
+        self.assertEqual(capture.capture_progress(log),8400)
+        self.assertIn('not a startup capability check',capture.capture_status(log,9000))
+        self.assertIn('8400',capture.capture_status(log,9000))
+        self.assertIsNone(capture.capture_progress('host starting'))
+        with self.assertRaisesRegex(ValueError, 'does not establish which APK'):
+            capture.motion_files('replay up to present 9600: draws 123\n',9000,16)
+        self.assertEqual(capture.capture_progress(log+'pass capture draw: present 9012 pass 18\n'),9012)

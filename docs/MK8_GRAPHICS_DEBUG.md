@@ -935,3 +935,31 @@ collection; use the same options with `restore` if recovery is needed.
 The next offline comparison will evaluate wheel diffuse lighting from the raw
 sampled inputs and recorded parameters, then compare actual mesh coverage/depth
 if the fragment calculation predicts illumination where the output is dark.
+
+### Recovery: missing shader-filter marker is not an APK diagnosis
+
+The first collector implementation checked the `shader-filter capture enabled`
+marker before checking progress. That marker is emitted only when the scheduled
+pass dump starts, not at startup. Collecting early could therefore incorrectly
+say that the installed APK lacked capture support. The helper now distinguishes
+unconfirmed/early progress from a reached schedule with a missing marker, and
+neither message alone establishes which APK is installed. This is a helper-only
+fix; it needs no APK rebuild.
+
+Preserve the current capture folder and keep the game running if it is still
+open. After pulling, inspect the existing run:
+
+```bash
+python3 devtools/capture_menu.py status --scene shadows --shadow-test wheel-inputs
+```
+
+Use the same `--output` if start used a custom directory. Status reads the
+phone's current log/env, saves `status-log.txt` and `status-env.txt` in that
+folder, reports the scheduled and latest logged present, and checks whether
+the settings still match those armed. It does not stop/restart the app or
+change the phone's settings. Progress messages are periodic, so their last
+present can trail actual progress. If early, keep the scene open and retry
+collect. Do not run start again in the existing folder. If the marker remains
+missing after the schedule, inspect/share status-log.txt and the status output
+before choosing a rebuild or new capture. If settings have already been
+restored or changed, status reports the mismatch rather than overwriting them.

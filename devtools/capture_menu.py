@@ -70,9 +70,29 @@ def pass_files(log, frame, frames=1):
     return files
 
 
+def capture_progress(log):
+    # The shader-filter marker is emitted when dumping starts, not at launch.
+    # Use existing progress messages without inferring runtime capabilities.
+    values = re.findall(r'replay up to present (\d+)|frame trace begins at present (\d+)|pass capture(?: draw| input)?: present (\d+)', log)
+    return max((int(value) for row in values for value in row if value), default=None)
+
+
+def capture_status(log, frame):
+    progress = capture_progress(log)
+    shown = 'unknown (no progress message yet)' if progress is None else str(progress)
+    marker = 'shader-filter capture enabled: vertex 35696712904ac390' in log
+    completed = len(re.findall(r'pass dump \d+: .* → ', log))
+    return (f'Scheduled capture: present {frame}; latest logged progress: {shown}.\n'
+            f'Shader-filter start marker: {"seen" if marker else "not seen (not a startup capability check)"}.\n'
+            f'Completed pass images logged: {completed}.')
+
+
 def motion_files(log, frame, frames):
     if 'shader-filter capture enabled: vertex 35696712904ac390' not in log:
-        raise ValueError('The installed APK lacks the shader-filter capture. Rebuild with the new runtime; preserve this log.')
+        progress = capture_progress(log)
+        if progress is None or progress < frame:
+            raise ValueError(f'Capture has not yet been confirmed at present {frame}; latest logged progress is {progress if progress is not None else "unknown"}. Keep the race open and retry collect. A missing start marker does not prove the APK is outdated.')
+        raise ValueError('The scheduled frame was reached, but the shader-filter start marker is missing. This does not establish which APK is installed. Preserve the log and run the status action to check capture settings before rebuilding.')
     files = pass_files(log, frame, frames)
     targets = {}
     packed = {int(i) for i in re.findall(r'pass dump (\d+) raw R11G11B10 → ', log)}
@@ -98,7 +118,7 @@ def input_files(log, frame, frames):
         if int(index) in raw and ((int(binding), int(fmt)) in ((1,64),(2,76))):
             found.setdefault(int(present),set()).add(int(binding))
     if len([v for v in found.values() if v >= {1,2}]) < min(frames,8):
-        raise ValueError('Missing normal/linear-depth inputs. Rebuild the updated APK and preserve this log.')
+        raise ValueError('Missing normal/linear-depth inputs. Preserve this log and use status to check progress/settings; missing inputs alone do not prove an outdated APK.')
     return files
 
 
@@ -121,7 +141,7 @@ def packet_files(manifest, frame, wheel=False):
 
 def main():
     ap = argparse.ArgumentParser(description=__doc__)
-    ap.add_argument('action', choices=['start', 'collect', 'restore'])
+    ap.add_argument('action', choices=['start', 'collect', 'restore', 'status'])
     ap.add_argument('--scene', choices=['menu', 'shadows'], default='menu')
     ap.add_argument('--shadow-test', choices=['baseline', 'map-off', 'uniforms', 'wheel-light', 'wheel-motion', 'wheel-inputs'], default='baseline',
                     help='uniforms captures normal shadow inputs (updated APK); map-off is the earlier inconclusive skip experiment')
@@ -193,6 +213,18 @@ def main():
             print('After about four minutes run collect. If it is not ready, collect will say so.')
     elif args.action == 'restore':
         restore()
+    elif args.action == 'status':
+        meta = json.loads((out/'capture.json').read_text())
+        log = shell('cat', root+'/log.txt')
+        current = shell('cat', root+'/env.txt')
+        (out/'status-log.txt').write_bytes(log)
+        (out/'status-env.txt').write_bytes(current)
+        print(capture_status(log.decode('utf-8',errors='replace'),meta['frame']))
+        fresh = hashlib.sha256(log).hexdigest() != meta['previous_log_sha256']
+        same = current.replace(b'\r\n',b'\n') == (out/'capture-env.txt').read_bytes().replace(b'\r\n',b'\n')
+        print(f'Log changed since arming: {fresh}; phone env.txt matches armed settings: {same}.')
+        print('Phone settings and app state were not changed.')
+        print(f'Diagnostic log: {out / "status-log.txt"}')
     else:
         meta = json.loads((out/'capture.json').read_text())
         log = shell('cat', root+'/log.txt')
