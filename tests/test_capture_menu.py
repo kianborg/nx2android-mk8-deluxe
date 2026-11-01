@@ -108,3 +108,40 @@ class MenuCaptureTests(unittest.TestCase):
         self.assertEqual(len(capture.pass_files(log,9000,16)),16)
         with self.assertRaises(ValueError):capture.pass_files(log,9000)
         with self.assertRaises(ValueError):capture.pass_files(log.split('pass dump 07')[0],9000,16)
+
+    def test_motion_capture_uses_shader_instead_of_resolution_and_preserves_test_settings(self):
+        original = b'DM_VK_DRIVER=turnip\nDM_VK_BC_DECODE=1\nTU_DEBUG=nolrz\nDM_VK_CB_DRAWS=0\n'
+        env = capture.capture_env(original, 9000, 'wheel-motion')
+        self.assertTrue(env.startswith(original))
+        self.assertNotIn(b'DM_VK_PASSDUMP_SIZE=', env)
+        for row in (b'DM_VK_PASSDUMP_VS=35696712904ac390\n', b'DM_VK_PASSDUMP_TARGET=all\n',
+                    b'DM_VK_PASSDUMP_UNIFORMS=1\n', b'DM_VK_PASSDUMP_RAW=1\n'):
+            self.assertIn(row, env)
+        shots = next(line for line in env.decode().splitlines() if line.startswith('DM_VK_SHOT='))
+        self.assertEqual(shots.split('=', 1)[1].split(','), list(map(str, range(9000, 9018))))
+
+    def test_motion_collection_requires_two_targets_depth_uniforms_and_updated_runtime(self):
+        log = ('shader-filter capture enabled: vertex 35696712904ac390\n'
+               'frame trace begins at present 9000\npass capture draw: present 9001\npass capture uniform: present 9001\n')
+        for frame in range(8):
+            for target in range(3):
+                i = frame*3+target
+                size = '482x271' if frame%2 else '640x360'
+                log += f"pass dump {i:02d} is the submission's pass 18 (present {9001+frame})\n"
+                if target == 0:
+                    log += f'pass dump {i:02d}: depth {size} format 126, values 0 .. 1 → /files/pass_{i:02d}.ppm\n'
+                else:
+                    log += (f'pass capture: present {9001+frame} pass 18 dump {i:02d} target {target-1} layer {target-1}\n'
+                            f'pass dump {i:02d}: {size} format 122 → /files/pass_{i:02d}.ppm\n'
+                            f'pass dump {i:02d} raw R11G11B10 → /files/pass_{i:02d}.ppm.u32\n')
+        files = capture.motion_files(log, 9000, 16)
+        self.assertEqual(len(files), 48)  # 24 previews, 8 depth, 16 packed colour
+        self.assertIn('pass_01.ppm.u32', files)
+        self.assertIn('pass_00.ppm.f32', files)
+        for damaged in (log.replace('shader-filter capture enabled:', 'old runtime:'),
+                        log.replace('target 1 layer 1', 'target 0 layer 1'),
+                        log.replace('pass capture draw:', 'no draws:'),
+                        log.replace('pass capture uniform:', 'no uniforms:'),
+                        log.replace('raw R11G11B10', 'missing packed sidecar')):
+            with self.assertRaises(ValueError):
+                capture.motion_files(damaged, 9000, 16)

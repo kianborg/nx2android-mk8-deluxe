@@ -774,3 +774,73 @@ own backup. A successful result would implicate the LRZ path but would still
 need a performance assessment and narrower runtime investigation before choosing
 a permanent workaround. A negative result would keep changing light inputs,
 depth state, sampling and resolution transitions under investigation.
+
+
+### Motion capture after the LRZ comparison
+
+The user reports that `wheel-lrz` also only partly helps: remaining flicker is
+less frequent and occurs mainly during acceleration/deceleration. Neither
+comparison establishes LRZ or submission splitting as the root cause. The next
+capture observes those transitions rather than adding a rendering workaround.
+
+`--shadow-test wheel-motion` needs the updated runtime. It filters passes by
+vertex shader 35696712904ac390, which the existing trace identifies as the local
+light-volume shader. Pass selection has no size or pass-number filter, so it
+follows dynamic resolution changes. It captures 16 presents, subject to the
+existing 96-image cap:
+
+- Both bound colour attachments, with each view's layer (diffuse/specular light
+  outputs in the observed pass), as PPM previews and exact packed R11G11B10 `.u32`
+  sidecars. Pixel interpretation uses the PPM dimensions and little-endian
+  Vulkan B10G11R11_UFLOAT_PACK32 layout.
+- The tested D32 attachment, including its existing `.f32` values. The generic
+  depth dumper captures layer zero; this observed light depth image has one
+  layer. This is not a capture of all sampled G-buffer textures.
+- Each matching draw's shader keys, pipeline hash, viewport, dimensions and
+  depth/cull/clamp/FDZ state, plus reflected vertex/fragment constant buffers:
+  up to 512 bytes each as exact hexadecimal words in the log, bounded to 1024
+  draws. The observed light buffers are 224 and 96 bytes and fit this bound.
+  These are CPU replay uniform snapshots, not reads of the GPU uniform buffer.
+- Final images for presents 9000–9017, bracketing the pass window, plus one full
+  frame trace and the capture's settings. Use logged present numbers to align
+  the effect images and final frames.
+
+The collector checks that the new runtime accepted the shader filter and that
+at least eight presents contain both light targets and depth, with draw/uniform
+logs present. It rejects an older APK or incomplete results instead of silently
+accepting the earlier exact-size capture. Readbacks and logging change timing;
+absence of flicker in this capture does not demonstrate a fix.
+
+Pull the branch, rebuild/reinstall using the existing port command with the same
+signing key and Turnip ZIP (`--vulkan-driver`, see [TURNIP_TEST.md](TURNIP_TEST.md)).
+No shader translation changes were made. Then:
+
+```bash
+python3 devtools/capture_menu.py start --scene shadows --shadow-test wheel-motion
+```
+
+Open Time Trials at Mario Kart Stadium and reach the banked antigravity section.
+The default present 9000 is roughly five minutes at 30 FPS from launch (longer
+if frame rate drops). Around that time, repeatedly accelerate briefly and
+release/brake while remaining in antigravity, without pausing. Keep doing this
+through the capture window; do not hold the kart stationary throughout. After
+about six minutes, or later if capture slowed the game, collect:
+
+```bash
+python3 devtools/capture_menu.py collect --scene shadows --shadow-test wheel-motion
+```
+
+Send `work/mk8-shadows-wheel-motion-capture/mk8-shadows-wheel-motion-diagnostics.zip`.
+If too large to upload, recompress the capture folder as `.7z`. No repeat run
+is needed just for compression. A short screen recording of the same remaining
+flicker can help if capture timing suppresses it, but is not required to start.
+The helper preserves current rendering settings and restores them after
+successful collection. If collection fails, retain the folder/log and retry;
+restore with the same options and `restore` action if needed. This mode uses a
+fresh output directory separate from previous experiments.
+
+Analysis will first check for discontinuities in light transforms/parameters
+and resolution while comparing both light outputs against tested depth. A
+uniform discontinuity may also be legitimate animation; it requires shader
+interpretation and correlation with the visible change. Stable CPU snapshots
+alone cannot prove GPU uniform data, synchronization or sampling is correct.
