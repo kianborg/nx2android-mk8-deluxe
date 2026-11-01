@@ -145,3 +145,39 @@ class MenuCaptureTests(unittest.TestCase):
                         log.replace('raw R11G11B10', 'missing packed sidecar')):
             with self.assertRaises(ValueError):
                 capture.motion_files(damaged, 9000, 16)
+
+    def test_input_capture_adds_only_diagnostics_and_requires_sampled_images(self):
+        original = b'DM_VK_DRIVER=turnip\nDM_VK_BC_DECODE=1\nTU_DEBUG=nolrz\nDM_VK_CB_DRAWS=0\n'
+        env = capture.capture_env(original,9000,'wheel-inputs')
+        self.assertTrue(env.startswith(original))
+        self.assertIn(b'DM_VK_PASSDUMP_INPUTS=6\n',env)
+        self.assertIn(b'DM_VK_DRAW_PACKET=35696712904ac390\n',env)
+        self.assertNotIn(b'DM_VK_PASSDUMP_SIZE=',env)
+        log=('shader-filter capture enabled: vertex 35696712904ac390\nframe trace begins at present 9000\n'
+             'pass capture draw: present 9001\npass capture uniform: present 9001\n')
+        for frame in range(8):
+            for part in range(5):
+                i=frame*5+part;present=9001+frame
+                log+=f"pass dump {i:02d} is the submission's pass 16 (present {present})\n"
+                if part==0:
+                    log+=f'pass dump {i:02d}: depth 579x326 format 126 → file\n'
+                else:
+                    log+=f'pass dump {i:02d}: 579x326 format 122 → file\n'
+                    if part<3:
+                        log+=(f'pass capture: present {present} pass 16 dump {i:02d} target {part-1} layer {part-1}\n'
+                              f'pass dump {i:02d} raw R11G11B10 → file\n')
+                    else:
+                        log+=(f'pass capture input: present {present} pass 16 dump {i:02d} binding {part-2} format {64 if part==3 else 76} size 579x326\n'
+                              f'pass dump {i:02d} raw format {64 if part==3 else 76} → file\n')
+        files=capture.input_files(log,9000,16)
+        self.assertEqual(len(files),80)
+        self.assertIn('pass_03.ppm.raw',files)
+        for invalid in (log.replace('binding 1 format 64','binding 1 format 76'),log.replace('raw format','no raw')):
+            with self.assertRaises(ValueError):capture.input_files(invalid,9000,16)
+
+    def test_wheel_mesh_packet_accepts_shared_volume_shader_but_not_resolve(self):
+        packet={'complete':True,'present':9000,'vertex_shader':'35696712904ac390',
+                'fragment_shader':'0722cc0403877a4e','streams':[],
+                'uniforms':[{'stage':1,'binding':4,'size':224,'saved':True,'file':'draw_packet_fragment_uniform_00.bin'}]}
+        self.assertIn('draw_packet_indices.bin',capture.packet_files(packet,9000,wheel=True))
+        with self.assertRaises(ValueError):capture.packet_files(packet,9000)

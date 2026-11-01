@@ -844,3 +844,94 @@ and resolution while comparing both light outputs against tested depth. A
 uniform discontinuity may also be legitimate animation; it requires shader
 interpretation and correlation with the visible change. Stable CPU snapshots
 alone cannot prove GPU uniform data, synchronization or sampling is correct.
+
+### Motion archive analysis: isolate sampled inputs next
+
+The received `mk8-shadows-wheel-motion-diagnostics.7z` is complete: 16 effect
+presents 9000–9015, 48 intermediate images with raw depth/packed colour, and 18
+final frames. Its settings use the normal Turnip/CPU BC baseline, with neither
+TU_DEBUG=nolrz nor DM_VK_CB_DRAWS=0. It therefore reproduces the baseline issue;
+it cannot measure the residual after those comparisons.
+
+The draw/uniform records identify the four nearby cyan wheel lights as fragment
+shader **30b45cd2223d3964**, sharing vertex shader 35696712904ac390 with the
+13 lights using fragment shader 0722cc0403877a4e. Wheel lights remain submitted
+through all 16 captured presents. The wheel shader writes diffuse output zero;
+its SPIR-V samples normals at binding 1 and linear depth at binding 2, reconstructs
+surface position, and evaluates clamped Lambert lighting and distance falloff.
+It has no discard operation. Its uniforms do not simply turn off on dark frames.
+
+A useful pair is effect presents 9012 and 9013 (pass dumps 36–41):
+
+- Both are 579x326, with identical captured camera c0 words and pipeline keys.
+- The four wheel lights move at most 0.000245 world units between CPU snapshots;
+  radii shrink about 0.305%, and cyan colour strength about 0.301%.
+- Summing the exact green component of target zero over x=[230,345), y=[210,275)
+  gives 5347.172 versus 912.911, an 82.93% drop. Pixels above green=1 fall from
+  1465 to 400. This measures that specific region, not the entire frame.
+- D32 differs mostly slightly in this region, with some animated geometry/outlier
+  pixels. Among 1382 pixels across the image losing over 90% of green from a
+  starting value above 1, median absolute depth change is 2.86e-6. Depth is not
+  bit-identical, and sampled linear depth/normals are absent from this archive.
+- Vertex and fragment c0/c1 snapshots agree for each draw. These are CPU replay
+  snapshots and do not prove the GPU consumed those exact values.
+
+This pair rules out a changing resolution/camera matrix as the immediate cause
+of its brightness jump. It does not distinguish incorrect normals/linear depth,
+GPU uniform data, rasterization/depth rejection, or a legitimate animated input.
+An exploratory ideal-sphere coverage estimate using the captured matrix/depth
+allows almost all lost pixels, but it is not a replay of the actual polygon mesh
+and cannot establish correct rasterization. No rendering fix is justified yet.
+
+**Frame numbering correction:** texture/effect present N in this runtime maps to
+`frame_(N+1).ppm`, since `vk_tex_sweep` advances the texture counter after the
+presentation shot. The visible alternation corroborates that mapping in this
+archive. Thus effect 9012/9013 compare with final images 9013/9014. Earlier prose
+about matching presents must account for this one-frame offset.
+
+#### Capturing sampled normals, linear depth, and volume mesh
+
+The new `wheel-inputs` mode extends `wheel-motion`, without a shader workaround.
+It saves the last observed fragment binding 1/2 images at the end of the filtered
+pass (the observed light draws share them), with exact raw bytes:
+
+- Vulkan format 64 / A2B10G10R10_UNORM_PACK32: normal `.raw` file, 4 bytes/pixel.
+- Vulkan format 76 / R16_SFLOAT: normalized linear-depth `.raw`, 2 bytes/pixel.
+- Existing diffuse/specular `.u32`, D32 `.f32`, CPU uniform words and final frames.
+- One CPU indexed-draw packet of the shared light-volume mesh, to replace the
+  ideal sphere approximation with the actual 864-index geometry.
+
+Input capture supports only single-layer, single-mip base images, as in the
+observed pass; sample swizzles and samplers remain described in the full trace.
+During this diagnostic only, descriptor memo lookup is bypassed for the selected
+vertex shader so bindings are observed even on a reuse hit. Descriptor-set caching
+and the actual draw state remain enabled. Readbacks and logging also change timing;
+a run without visible flicker is inconclusive. At five images per present,
+16 presents use 80 of the existing 96 readback slots, assuming one matching pass.
+The collector requires raw inputs of both expected formats across at least eight
+presents, plus a complete mesh packet. It rejects the earlier APK's output.
+
+Pull and rebuild/reinstall the APK using the existing port command, same signing
+key and Turnip ZIP. Then:
+
+```bash
+python3 devtools/capture_menu.py start --scene shadows --shadow-test wheel-inputs
+```
+
+Use Stadium Time Trials and the same antigravity location. Around the scheduled
+present 9000 (roughly five minutes at 30 FPS from launch), briefly accelerate and
+release/brake repeatedly through the window. Do not pause. Collect after about
+six minutes, or later if readbacks slow the game:
+
+```bash
+python3 devtools/capture_menu.py collect --scene shadows --shadow-test wheel-inputs
+```
+
+Send `work/mk8-shadows-wheel-inputs-capture/mk8-shadows-wheel-inputs-diagnostics.zip`,
+or recompress the folder as `.7z`. This is a fresh directory, avoiding the old
+capture's existing-output error. Settings are preserved and restored on successful
+collection; use the same options with `restore` if recovery is needed.
+
+The next offline comparison will evaluate wheel diffuse lighting from the raw
+sampled inputs and recorded parameters, then compare actual mesh coverage/depth
+if the fragment calculation predicts illumination where the output is dark.

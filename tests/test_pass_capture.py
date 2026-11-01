@@ -26,7 +26,12 @@ static struct {int rt_has_col[8],rt_has_cview[8]; struct {int set_format,format;
 static uint64_t g_pd_shader;
 static int g_pd_match,g_pd_state=1,g_pd_skip,g_sub_pass=19;
 static char g_pd_size[128],g_pd_from[32];
-static int targets,depths;
+typedef struct {unsigned layers,levels,w,h;int fmt;} vkimg_t;
+static vkimg_t *g_pd_inputs[8];static unsigned g_pd_inputs_mask;
+static int g_npd;enum {PD_MAX=96};
+#define VKLOG(...) ((void)0)
+static int targets,depths,input_count;
+static void pass_dump_image(vkimg_t *im,void *view,int ci) {(void)im;(void)view;(void)ci;input_count++;}
 static void texdump_flush(void) {}
 static void pass_dump_depth(void) {depths++;}
 static void pass_dump_colour(int ci) {if(ci<S.ncol)targets|=1<<ci;}
@@ -46,6 +51,10 @@ int main(void) {
  // Legacy, unfiltered capture still supports one selected target.
  g_pd_shader=0;setenv("DM_VK_PASSDUMP_TARGET","1",1);
  pass_dump();assert(targets==2 && depths==1);
+ // Selected inputs are independent of colour targets and preserve binding selection.
+ vkimg_t im={.layers=1,.levels=1};g_pd_inputs[1]=g_pd_inputs[2]=&im;g_pd_inputs_mask=6;
+ pass_dump();assert(input_count==2);
+ im.layers=2;pass_dump();assert(input_count==2);
  return 0;
 }
 '''
