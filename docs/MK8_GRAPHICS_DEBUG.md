@@ -724,3 +724,53 @@ collection failed, first restore with `capture_menu.py restore --scene shadows
 Use a fresh `--output` for a repeated comparison; preserve earlier backups.
 A positive result would justify investigating split/depth transitions; a
 negative result would leave light inputs, sampling and depth state open.
+
+### Reduced splitting helps, but moving still flickers
+
+The user reports that `wheel-submit` still flickers during movement, less than
+before, while stationary flicker is gone. This is a partial improvement, not a
+fix. Changing submission timing also changes frame time and potentially dynamic
+resolution; the observation alone does not prove a command-buffer defect.
+Further comparisons should include both stationary and moving antigravity views.
+
+The next comparison disables Turnip's LRZ optimization directly, while keeping
+`DM_VK_CB_DRAWS=0` as in the partial improvement. This differs from FDZ=0, which
+only disables the host's fragment-depth shader workaround and does not globally
+disable driver LRZ. Normal depth testing remains enabled.
+
+Verified against the bundled Mesa revision `4497ea2a31`:
+
+- [tu_util.cc](https://github.com/chaotic-cx/mesa-mirror/blob/4497ea2a31/src/freedreno/vulkan/tu_util.cc)
+  parses `TU_DEBUG` and registers `nolrz`.
+- [tu_device.cc](https://github.com/chaotic-cx/mesa-mirror/blob/4497ea2a31/src/freedreno/vulkan/tu_device.cc)
+  initializes `device->use_lrz = !TU_DEBUG(NOLRZ)`.
+- [tu_lrz.cc](https://github.com/chaotic-cx/mesa-mirror/blob/4497ea2a31/src/freedreno/vulkan/tu_lrz.cc)
+  leaves LRZ disabled when `use_lrz` is false. The packaged driver also contains
+  the `nolrz` option. The Android host loads arbitrary env.txt keys before Vulkan
+  initialization. A full app restart is necessary because Turnip reads debug
+  options once.
+
+No APK rebuild or new diagnostic archive is required:
+
+```bash
+git pull --ff-only
+python3 devtools/pipeline_stability.py start --test wheel-lrz
+```
+
+This works whether `wheel-submit` is still armed or has already been restored.
+Existing TU_DEBUG flags are preserved and `nolrz` is added once. The helper
+backs up the exact current settings and stops the app; reopen it manually.
+Compare illumination during both movement and standing still, and note frame
+rate changes. Disabled early rejection can increase GPU cost. Report whether
+flicker disappears, remains, or the light itself disappears.
+
+```bash
+python3 devtools/pipeline_stability.py restore --test wheel-lrz
+```
+
+Restoration returns to the settings present before this test. If the earlier
+wheel-submit comparison was still active, restore that afterward too, using its
+own backup. A successful result would implicate the LRZ path but would still
+need a performance assessment and narrower runtime investigation before choosing
+a permanent workaround. A negative result would keep changing light inputs,
+depth state, sampling and resolution transitions under investigation.

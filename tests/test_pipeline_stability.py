@@ -43,3 +43,15 @@ class PipelineStability(unittest.TestCase):
         updated = tool.comparison_settings(original, 'wheel-submit')
         self.assertEqual(updated, original.replace(b'DM_VK_CB_DRAWS=128', b'DM_VK_CB_DRAWS=0'))
         self.assertEqual(updated.count(b'DM_VK_CB_DRAWS='), 1)
+
+    def test_lrz_comparison_retains_reduced_splitting_and_other_driver_flags(self):
+        original = (b'DM_VK_DRIVER=turnip\nDM_VK_BC_DECODE=1\nDM_VK_FDZ=1\n'
+                    b'DM_VK_CB_DRAWS=0\nTU_DEBUG=perf,startup\n')
+        updated = tool.comparison_settings(original, 'wheel-lrz')
+        self.assertEqual(updated, original.replace(b'TU_DEBUG=perf,startup', b'TU_DEBUG=perf,startup,nolrz'))
+        self.assertEqual(tool.comparison_settings(updated, 'wheel-lrz'), updated)
+
+    def test_lrz_comparison_also_works_after_submission_test_was_restored(self):
+        original = b'DM_VK_DRIVER=turnip\nDM_VK_BC_DECODE=1\n'
+        self.assertEqual(tool.comparison_settings(original, 'wheel-lrz'),
+                         original+b'DM_VK_CB_DRAWS=0\nTU_DEBUG=nolrz\n')

@@ -2,6 +2,7 @@
 """Back up MK8 settings for a rendering comparison; restore without losing newer edits."""
 import argparse
 from pathlib import Path
+import re
 import subprocess
 
 PACKAGE = 'org.nx2a.t0100152000022000'
@@ -19,6 +20,13 @@ def comparison_settings(original, test='pipelines'):
         changes = {'DM_VK_FDZ': '0'}
     elif test == 'wheel-submit':
         changes = {'DM_VK_CB_DRAWS': '0'}
+    elif test == 'wheel-lrz':
+        debug = settings.get('TU_DEBUG', '')
+        if 'nolrz' not in re.split(r'[,\s]+', debug):
+            debug = debug + ',nolrz' if debug else 'nolrz'
+        # Compare with the reported partial improvement from wheel-submit,
+        # even if that comparison has already been restored.
+        changes = {'DM_VK_CB_DRAWS': '0', 'TU_DEBUG': debug}
     elif test == 'pipelines':
         changes = {'DM_VK_ASYNC_PIPE': '0', 'DM_VK_NOPREWARM': '1'}
     else:
@@ -35,7 +43,7 @@ def sync_settings(original):
 def main():
     ap = argparse.ArgumentParser(description=__doc__)
     ap.add_argument('action', choices=['start', 'restore'])
-    ap.add_argument('--test', choices=['pipelines', 'wheel-depth', 'wheel-submit'], default='pipelines')
+    ap.add_argument('--test', choices=['pipelines', 'wheel-depth', 'wheel-submit', 'wheel-lrz'], default='pipelines')
     ap.add_argument('--output', type=Path)
     ap.add_argument('--adb', default='adb')
     ap.add_argument('--serial')
@@ -54,7 +62,12 @@ def main():
         (out/'env-test.txt').write_bytes(updated)
         run('shell', 'am', 'force-stop', PACKAGE)
         run('push', str(out/'env-test.txt'), REMOTE)
-        if a.test == 'wheel-submit':
+        if a.test == 'wheel-lrz':
+            print('Turnip LRZ disabled (TU_DEBUG includes nolrz), with DM_VK_CB_DRAWS=0 retained.')
+            print('Normal depth testing remains enabled. No APK rebuild is needed; reopen the game now.')
+            print('Test both stationary and moving in antigravity; report flicker and performance changes.')
+            print('This is a diagnostic comparison, not a confirmed fix.')
+        elif a.test == 'wheel-submit':
             print('Ordinary draw-count command-buffer splits disabled (DM_VK_CB_DRAWS=0).')
             print('Open Time Trials and observe the wheel illumination at the same stationary antigravity location.')
             print('Report whether it is steady, disappears, or still flickers; note any performance change.')
