@@ -1012,3 +1012,88 @@ archive, which has no sampled inputs. Phone validation is still pending.
 The user would like an upstream pull request after the flicker is fixed. Prepare
 one focused on the confirmed cause, dependencies and validation after a device
 retest; do not describe the diagnostic changes as a completed runtime fix.
+
+### Sampled-input result: zero-filled half-resolution normals
+
+Analysis of `mk8-shadows-wheel-inputs-diagnostics.7z` completed before the cloud
+workspace interruption. Its files survived recovery. The archive contains 16
+complete lighting/input frames and a complete 864-index light-volume packet.
+The float64 diffuse model reproduces the bright/dark pattern from the sampled
+inputs; no strong predicted-light pixel is missing over 90% of its green output
+in the captured diffuse target. This does not validate every rendering operation,
+but it shifts the immediate investigation upstream of these light draws.
+
+The half-resolution normal RGB texture is entirely zero in eight effect presents:
+9003, 9004, 9005, 9008, 9009, 9010, 9012 and 9015. Other captured presents contain
+detailed normals. A zero RGB value decodes as (-1,-1,-1), not a valid default
+surface normal. The incorrect illumination from that input is reproduced by the
+captured wheel shader equations. These normals are shared by local lights, so
+this result is relevant to the user's additional reports of other lights and
+shadows flickering. It does not yet establish the cause of full-screen flashes.
+
+A controlled CPU input swap at effect presents 9012/9013 (both 485x272) gives:
+
+| Normals from | Linear depth from | Predicted green sum |
+| --- | --- | --- |
+| 9012 (zero RGB) | 9012 | 3006.22 |
+| 9012 (zero RGB) | 9013 | 2992.75 |
+| 9013 (populated) | 9012 | 781.93 |
+| 9013 (populated) | 9013 | 779.76 |
+
+This comparison holds camera and light parameters at present 9012. It isolates
+the dominant change to normals for that pair, rather than linear depth. Model
+precision/rasterization limits remain as described above. The analysis tool now
+records `normal_rgb_zero_pixels` and `normal_pixels` in its JSON report so this
+condition is explicit. Zero counts describe RGB only; alpha is excluded.
+
+The frame trace identifies a normal-copy pass using vertex shader
+e8a211dd1d879831 and fragment shader 820a8de8f2b8255d. It samples full-resolution
+format-64 normals at fragment binding 1, with linear filtering, and writes a
+half-resolution format-64 attachment at **colour slot 3**, leaving slots 0–2
+unbound. Its fragment SPIR-V samples the texture and writes location 3; the
+observed pass has depth testing disabled. The current archive lacks its source
+image, so it cannot establish whether full-resolution normal generation or this
+copy pass failed. Do not patch the light shader or replace normals with a prior
+frame on the strength of this evidence.
+
+#### Existing-APK normal-copy capture
+
+The `wheel-normals` helper mode uses capture capabilities already exercised by
+the installed diagnostic APK. It follows the normal-copy VS across 16 presents,
+records all bound colour targets (slot 3 here), and captures fragment binding 1.
+Both images have exact format-64 `.raw` sidecars. It also captures final frames
+and the existing trace/draw-state log. No mesh packet, fixed-size filter, shader
+workaround or native runtime change is introduced. As with earlier input captures,
+descriptor memo lookup for the selected shader is bypassed during observation;
+readbacks/logging alter timing and can suppress a timing-sensitive fault.
+
+Collection requires raw source and destination from the same pass in at least
+eight distinct presents. At one such pass per frame this uses 32 of the 96 image
+slots. The source and destination need not have equal dimensions; their expected
+role is full-resolution input and half-resolution output. Status recognizes this
+mode's own shader-filter marker.
+
+The user's project folder is a ZIP extraction without .git. Update the helper
+from that folder instead of using `git pull`:
+
+```bash
+curl -fL https://raw.githubusercontent.com/kianborg/nx2android-mk8-deluxe/main/devtools/capture_menu.py -o devtools/capture_menu_updated.py
+python3 devtools/capture_menu_updated.py start --scene shadows --shadow-test wheel-normals
+```
+
+No APK rebuild is needed for this step. Use the same Stadium antigravity view,
+with brief acceleration/release/braking around present 9000 (about five minutes
+at 30 FPS from launch). Keep the view open. After about six minutes, or later if
+status indicates the capture has not completed:
+
+```bash
+python3 devtools/capture_menu_updated.py collect --scene shadows --shadow-test wheel-normals
+```
+
+Send `work/mk8-shadows-wheel-normals-capture/mk8-shadows-wheel-normals-diagnostics.zip`,
+or recompress the folder as `.7z`. This mode has a new output folder and preserves
+earlier captures. Successful collection restores the original settings; the same
+scene/test options with `status` inspect progress or `restore` recover settings.
+The next comparison checks whether the source normals are already blank, or
+whether valid source data fails to reach the slot-3 destination. No flicker fix
+or upstream PR is claimed until the responsible path is identified and retested.

@@ -196,3 +196,36 @@ class MenuCaptureTests(unittest.TestCase):
             capture.motion_files('replay up to present 9600: draws 123\n',9000,16)
         self.assertEqual(capture.capture_progress(log+'pass capture draw: present 9012 pass 18\n'),9012)
         self.assertEqual(capture.capture_progress('[dm] [longframe] frame 3392 (119.01 s) whole frame 35 ms'),3392)
+
+    def test_normal_copy_capture_keeps_render_settings_and_selects_producer(self):
+        original=(b'DM_VK_DRIVER=turnip\nDM_VK_BC_DECODE=1\nTU_DEBUG=nolrz\nDM_VK_CB_DRAWS=0\n'
+                  b'DM_VK_PASSDUMP_SIZE=480x270\nDM_VK_DRAW_PACKET=old\n')
+        env=capture.capture_env(original,9000,'wheel-normals')
+        for row in (b'DM_VK_DRIVER=turnip\n',b'DM_VK_BC_DECODE=1\n',b'TU_DEBUG=nolrz\n',b'DM_VK_CB_DRAWS=0\n',
+                    b'DM_VK_PASSDUMP_VS=e8a211dd1d879831\n',b'DM_VK_PASSDUMP_TARGET=all\n',
+                    b'DM_VK_PASSDUMP_INPUTS=2\n',b'DM_VK_PASSDUMP_RAW=1\n',b'DM_VK_PASSDUMP_FRAMES=16\n'):
+            self.assertIn(row,env)
+        self.assertNotIn(b'DM_VK_PASSDUMP_SIZE=',env)
+        self.assertNotIn(b'DM_VK_DRAW_PACKET=',env)
+        self.assertIn(b'9017\n',env)
+
+    def test_normal_copy_collection_requires_paired_source_and_sparse_target(self):
+        log='shader-filter capture enabled: vertex e8a211dd1d879831\nframe trace begins at present 9000\n'
+        for frame in range(8):
+            index=frame*2;present=9000+frame
+            log+=(f'pass capture: present {present} pass 13 dump {index:02d} target 3 layer 0\n'
+                  f'pass capture input: present {present} pass 13 dump {index+1:02d} binding 1 format 64 size 960x540\n')
+            for i,size in ((index,'480x270'),(index+1,'960x540')):
+                log+=(f"pass dump {i:02d} is the submission's pass 13 (present {present})\n"
+                      f'pass dump {i:02d}: {size} format 64 → file\n'
+                      f'pass dump {i:02d} raw format 64 → file\n')
+        files=capture.normal_files(log,9000,16)
+        self.assertEqual(len(files),32)
+        self.assertIn('pass_01.ppm.raw',files)
+        for damaged in (log.replace('target 3','target 0'),
+                        log.replace('binding 1 format 64','binding 1 format 76'),
+                        log.replace('pass 13 dump 01 binding','pass 14 dump 01 binding'),
+                        log.replace('raw format 64','no raw'),
+                        log.replace('e8a211dd1d879831','35696712904ac390')):
+            with self.assertRaises(ValueError):capture.normal_files(damaged,9000,16)
+        self.assertIn('start marker: seen',capture.capture_status(log,9000,'wheel-normals'))

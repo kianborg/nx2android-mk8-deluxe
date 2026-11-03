@@ -25,11 +25,14 @@ def capture_env(original, frame, shadow_test='baseline'):
             raise ValueError('Restore the map-off experiment before capturing normal shadow inputs.')
         rows += ['DM_VK_DRAW_PACKET=b2cfa260c7494f18', f'DM_VK_DRAW_PACKET_AT={frame}',
                  'DM_VK_PASSDUMP_RGBA=1', 'DM_VK_TEXDUMP_SHADER=6aa6c36ed6065b7d', 'DM_VK_TEXDUMP_BINDING=2']
-    frames = 16 if shadow_test in ('wheel-light', 'wheel-motion', 'wheel-inputs') else 1
-    if shadow_test in ('wheel-light', 'wheel-motion', 'wheel-inputs'):
+    frames = 16 if shadow_test in ('wheel-light', 'wheel-motion', 'wheel-inputs', 'wheel-normals') else 1
+    if shadow_test in ('wheel-light', 'wheel-motion', 'wheel-inputs', 'wheel-normals'):
         if any(row.strip().startswith('DM_VK_X_SKIPVS=') and row.split('=',1)[1].strip() for row in rows):
             raise ValueError('Restore draw-skip experiments before the wheel capture.')
-        if shadow_test in ('wheel-motion', 'wheel-inputs'):
+        if shadow_test == 'wheel-normals':
+            rows += ['DM_VK_PASSDUMP_VS=e8a211dd1d879831', 'DM_VK_PASSDUMP_TARGET=all',
+                     'DM_VK_PASSDUMP_INPUTS=2', 'DM_VK_PASSDUMP_UNIFORMS=1', 'DM_VK_PASSDUMP_RAW=1']
+        elif shadow_test in ('wheel-motion', 'wheel-inputs'):
             rows += ['DM_VK_PASSDUMP_VS=35696712904ac390', 'DM_VK_PASSDUMP_TARGET=all',
                      'DM_VK_PASSDUMP_UNIFORMS=1', 'DM_VK_PASSDUMP_RAW=1']
         else:
@@ -37,7 +40,7 @@ def capture_env(original, frame, shadow_test='baseline'):
                      'DM_VK_PASSDUMP_DEPTH=0']
     if shadow_test == 'wheel-inputs':
         rows += ['DM_VK_PASSDUMP_INPUTS=6', 'DM_VK_DRAW_PACKET=35696712904ac390', f'DM_VK_DRAW_PACKET_AT={frame}']
-    shots = list(range(frame, frame+frames+(2 if shadow_test in ('wheel-motion','wheel-inputs') else 0))) if frames>1 else [frame,frame+2]
+    shots = list(range(frame, frame+frames+(2 if shadow_test in ('wheel-motion','wheel-inputs','wheel-normals') else 0))) if frames>1 else [frame,frame+2]
     rows += [f'DM_VK_TRACE_AT={frame}', 'DM_VK_TRACE_FRAME=*',
              f'DM_VK_PASSDUMP={frame}', f'DM_VK_PASSDUMP_FRAMES={frames}',
              'DM_VK_SHOT='+','.join(map(str,shots))]
@@ -77,10 +80,11 @@ def capture_progress(log):
     return max((int(value) for row in values for value in row if value), default=None)
 
 
-def capture_status(log, frame):
+def capture_status(log, frame, shadow_test='wheel-inputs'):
     progress = capture_progress(log)
     shown = 'unknown (no progress message yet)' if progress is None else str(progress)
-    marker = 'shader-filter capture enabled: vertex 35696712904ac390' in log
+    shader = 'e8a211dd1d879831' if shadow_test=='wheel-normals' else '35696712904ac390'
+    marker = f'shader-filter capture enabled: vertex {shader}' in log
     completed = len(re.findall(r'pass dump \d+: .* → ', log))
     return (f'Scheduled capture: present {frame}; latest logged progress: {shown}.\n'
             f'Shader-filter start marker: {"seen" if marker else "not seen (not a startup capability check)"}.\n'
@@ -122,6 +126,20 @@ def input_files(log, frame, frames):
     return files
 
 
+def normal_files(log, frame, frames):
+    files = pass_files(log, frame, frames)
+    if 'shader-filter capture enabled: vertex e8a211dd1d879831' not in log:
+        raise ValueError('The normal-copy capture has not started with the requested shader filter; preserve the log and check status/settings.')
+    raw = {int(i) for i in re.findall(r'pass dump (\d+) raw format 64 → ', log)}
+    sources={(int(f),int(pa)) for f,pa,i in re.findall(
+        r'pass capture input: present (\d+) pass (\d+) dump (\d+) binding 1 format 64',log) if int(i) in raw}
+    targets={(int(f),int(pa)) for f,pa,i in re.findall(
+        r'pass capture: present (\d+) pass (\d+) dump (\d+) target 3 layer 0',log) if int(i) in raw}
+    if len({f for f,pa in sources & targets})<min(frames,8):
+        raise ValueError('Normal-copy capture is incomplete: need raw source and destination normals from matching passes. Preserve the log and retry collect.')
+    return files
+
+
 def packet_files(manifest, frame, wheel=False):
     if (not manifest.get('complete') or not frame <= manifest.get('present', -1) <= frame+8
             or manifest.get('vertex_shader') != ('35696712904ac390' if wheel else 'b2cfa260c7494f18')
@@ -143,7 +161,7 @@ def main():
     ap = argparse.ArgumentParser(description=__doc__)
     ap.add_argument('action', choices=['start', 'collect', 'restore', 'status'])
     ap.add_argument('--scene', choices=['menu', 'shadows'], default='menu')
-    ap.add_argument('--shadow-test', choices=['baseline', 'map-off', 'uniforms', 'wheel-light', 'wheel-motion', 'wheel-inputs'], default='baseline',
+    ap.add_argument('--shadow-test', choices=['baseline', 'map-off', 'uniforms', 'wheel-light', 'wheel-motion', 'wheel-inputs', 'wheel-normals'], default='baseline',
                     help='uniforms captures normal shadow inputs (updated APK); map-off is the earlier inconclusive skip experiment')
     ap.add_argument('--output', type=Path)
     ap.add_argument('--frame', type=int, help='capture present (default: menu 6000, shadows 9000)')
@@ -188,7 +206,7 @@ def main():
         (out/'capture-env.txt').write_bytes(settings)
         before = shell('cat', root+'/log.txt')
         (out/'capture.json').write_text(json.dumps({'frame': args.frame,
-            'scene': args.scene, 'shadow_test': args.shadow_test, 'capture_frames': 16 if args.shadow_test in ('wheel-light','wheel-motion','wheel-inputs') else 1, 'previous_log_sha256': hashlib.sha256(before).hexdigest()}, indent=2)+'\n')
+            'scene': args.scene, 'shadow_test': args.shadow_test, 'capture_frames': 16 if args.shadow_test in ('wheel-light','wheel-motion','wheel-inputs','wheel-normals') else 1, 'previous_log_sha256': hashlib.sha256(before).hexdigest()}, indent=2)+'\n')
         shell('am', 'force-stop', PACKAGE)
         run('push', str(out/'capture-env.txt'), root+'/env.txt')
         print(f'Capture armed for present {args.frame}. Open the game manually now.')
@@ -200,8 +218,12 @@ def main():
             if args.shadow_test == 'wheel-light':
                 print('Capturing 16 consecutive lighting/output frames; keep the kart and camera still.')
             print('Choose Time Trials, Mario Kart Stadium. Drive onto the banked antigravity section.')
-            if args.shadow_test in ('wheel-motion', 'wheel-inputs'):
-                print('Requires the updated APK. Near capture time, repeatedly accelerate briefly and release/brake in antigravity.')
+            if args.shadow_test in ('wheel-motion', 'wheel-inputs', 'wheel-normals'):
+                if args.shadow_test=='wheel-normals':
+                    print('Uses the existing input-capture APK; no further APK rebuild is needed.')
+                else:
+                    print('Requires an APK with the selected capture support.')
+                print('Near capture time, repeatedly accelerate briefly and release/brake in antigravity.')
                 print('Keep doing this through the capture window; keep the race view open without pausing.')
             else:
                 print('Stop where the affected illumination is visible; keep the race view open without pausing.')
@@ -219,7 +241,7 @@ def main():
         current = shell('cat', root+'/env.txt')
         (out/'status-log.txt').write_bytes(log)
         (out/'status-env.txt').write_bytes(current)
-        print(capture_status(log.decode('utf-8',errors='replace'),meta['frame']))
+        print(capture_status(log.decode('utf-8',errors='replace'),meta['frame'],meta.get('shadow_test','baseline')))
         fresh = hashlib.sha256(log).hexdigest() != meta['previous_log_sha256']
         same = current.replace(b'\r\n',b'\n') == (out/'capture-env.txt').read_bytes().replace(b'\r\n',b'\n')
         print(f'Log changed since arming: {fresh}; phone env.txt matches armed settings: {same}.')
@@ -233,11 +255,11 @@ def main():
             raise ValueError('The game has not produced a new log since start.')
         count = meta.get('capture_frames', 1)
         mode = meta.get('shadow_test')
-        reader = input_files if mode=='wheel-inputs' else motion_files if mode=='wheel-motion' else pass_files
+        reader = normal_files if mode=='wheel-normals' else input_files if mode=='wheel-inputs' else motion_files if mode=='wheel-motion' else pass_files
         files = reader(log.decode('utf-8', errors='replace'), meta['frame'], count)
         for name in files:
             run('pull', root+'/'+name, str(out/name))
-        extra_shots = 2 if meta.get('shadow_test') in ('wheel-motion','wheel-inputs') else 0
+        extra_shots = 2 if meta.get('shadow_test') in ('wheel-motion','wheel-inputs','wheel-normals') else 0
         shots = range(meta['frame'], meta['frame']+count+extra_shots) if count>1 else (meta['frame'], meta['frame']+2)
         for frame in shots:
             name = f'frame_{frame:06d}.ppm'

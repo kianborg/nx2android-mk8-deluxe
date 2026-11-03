@@ -75,7 +75,8 @@ def analyze(folder):
     result=[]
     for key,images in sorted(inputs.items()):
         if not {64,76}<=images.keys() or key not in targets:continue
-        normal=decode_normals(read_image(folder,images[64],'normal'))
+        normal_bits=read_image(folder,images[64],'normal')
+        normal=decode_normals(normal_bits)
         depth=read_image(folder,images[76],'depth').astype(float)
         actual=decode_lights(read_image(folder,targets[key],'light'))
         if normal.shape!=actual.shape or depth.shape!=actual.shape[:2]:raise ValueError('Sampling scale changed; model requires matching input/output dimensions')
@@ -93,6 +94,8 @@ def analyze(folder):
         low=strong&(actual[...,1]<prediction[...,1]*.1)
         result.append({'effect_present':key[0],'final_frame':key[0]+1,'pass':key[1],
                        'width':depth.shape[1],'height':depth.shape[0],'diffuse_draws':count,
+                       'normal_rgb_zero_pixels':int(np.count_nonzero((normal_bits & 0x3fffffff)==0)),
+                       'normal_pixels':int(normal_bits.size),
                        'strong_green_pixels':int(strong.sum()),'underlit_candidates':int(low.sum()),
                        'predicted_green_sum':float(np.nansum(prediction[...,1])),
                        'actual_green_sum':float(np.nansum(actual[...,1]))})
