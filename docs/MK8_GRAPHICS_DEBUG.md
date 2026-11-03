@@ -1157,3 +1157,34 @@ if symptoms persist, the existing normal-copy mode can verify whether the source
 still becomes blank. A focused upstream PR should follow device confirmation,
 with this evidence and the general alias/clear regression, rather than claiming
 all broader flashing fixed from the host checks alone.
+
+### Build, install and enable Turnip with one command
+
+`devtools/build_install_mk8.py` runs the user's two porter commands with the same
+Python interpreter as the script, then enables Turnip and forced CPU BC decoding
+in the installed app's env.txt. Run it from the updated source checkout or ZIP
+extraction, with the normal Python environment and phone connected:
+
+```bash
+python devtools/build_install_mk8.py
+```
+
+Defaults relative to the user's home directory are `MK8-DLUXE-NSwiTcH`,
+`Downloads/ProdKeys.NET-v22.5.0/prod.keys`, and
+`Downloads/turnip_v24.3.0_R9v2.zip`, with two build jobs. Use `--game-folder`,
+`--keys`, `--driver`, `--jobs` or `--device` to override them. It uses the current
+source folder and existing porter toolchain/signing configuration; it does not
+fetch source updates. Output is explicitly written into the game folder as
+MarioKart8Deluxe.apk and MarioKart8Deluxe-data, matching the user's install paths.
+
+The script selects one ADB device before building. After a successful build it
+backs up existing phone settings into a fresh `work/mk8-build-install-*` folder,
+installs the APK/data, and stops the app before enabling the driver. Existing
+phone choices take precedence over new data-pack defaults, except that
+DM_VK_DRIVER=turnip and DM_VK_BC_DECODE=1 are set once. A temporary remote file
+and rename apply the updated settings, which are read back and verified.
+Successful completion leaves the app stopped for the player to reopen. Build
+or install failure stops the workflow; the script never requests signer
+replacement. Phone installation has not been performed in the cloud; command
+ordering, settings preservation and failure handling are checked using fake ADB
+and porter subprocesses.
