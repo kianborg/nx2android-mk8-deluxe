@@ -1266,3 +1266,34 @@ Workflow tests cover old-source rejection, stale-APK rejection before install,
 fresh-helper re-execution with unchanged file/device arguments, original-folder
 preservation, unsafe/invalid archive rejection, and executable-bit restoration,
 in addition to the previous build/install/settings tests.
+
+### Device confirmation and PR preparation
+
+The user confirms that flickering is fixed after the source-refresh build and
+installation. This follows the runtime check showing that the earlier negative
+retest used an older APK/source without the change. Confirmation is for the
+full fork on Nothing Phone (1), Android 15 / Adreno 642L, using Turnip R9v2 and
+forced CPU BC decoding. No post-fix raw capture is claimed.
+
+Upstream main was synced through 3d98ec0 (including attachment-layer rendering
+8509335 and CAS-window branch rewriting 3d98ec0). The merge was clean; the full
+fork suite passed (137 tests, three optional analysis skips), and its MK8 release
+host compiled 142 sources successfully. Merge commit: 4fae815.
+
+A focused branch `fix/inactive-colour-attachment-aliases` was created directly
+from upstream 3d98ec0 and pushed to the fork. Commit 8ba0e6a contains only
+`nxnative/dm/android/gfx_vk_exec.c` and `tests/test_attachment_alias.py`:
+115 additions, four deletions. It carries the alias fix and its regression, with
+no Turnip integration, CPU BC fallback, diagnostic tooling or graphics-debug
+history. Adapting to upstream preserved its new attachment-layer calculation
+and its existing clear-format lookup. All 54 upstream-branch tests pass with
+the NDK configured, and the MK8 release host compiles all 139 sources. Device
+confirmation used the full fork; the minimal branch was separately host-tested
+and compiled, and should be described that way in the PR.
+
+Compare/open the PR against `shirai91/nx2android:main`, using
+`kianborg/nx2android-mk8-deluxe:fix/inactive-colour-attachment-aliases` as the head.
+Suggested title: `fix(vk): avoid duplicate stores for inactive colour attachment aliases`.
+Before submission, smoke-test the synced full fork once for the new upstream
+changes. A short before/after clip can support the report. The user asked for
+preparation and next steps; no PR has been opened automatically.
