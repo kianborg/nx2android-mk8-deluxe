@@ -1224,3 +1224,45 @@ than claiming that the inactive-alias hypothesis is sufficient. Host tests use
 both old/new fake APKs, check the report contents and temporary-file removal,
 and reject unexpected phone commands. Normal device gameplay validation and the
 upstream PR remain pending.
+
+### Runtime check confirmed older source and older installed host
+
+The returned mk8-runtime-check.zip reports `alias_fix_marker_present: false`,
+`alias_event_in_log: false`, and `local_source_has_alias_helper: false`. Turnip
+and forced CPU BC are enabled in env.txt, and the log identifies the expected
+Mesa driver. The candidate alias change therefore has not yet been tested on
+this phone: downloading the build script into an older source ZIP rebuilt that
+older source.
+
+The helper now has `--update-source`, which downloads the current fork source
+ZIP into a fresh work/mk8-updated-source-* folder, validates extraction paths and
+the expected source/helper, restores executable bits for build tools, and
+re-executes the fresh helper with the same Python interpreter and absolute game,
+keys and driver paths. It preserves the inherited environment, toolchain/signing
+configuration, job count and optional device selection. It does not replace the
+original source folder. The update flag is omitted when re-executing, so it does
+not recursively download source.
+
+A normal build now refuses source missing the alias helper before building,
+and inspects libdmhost.so inside the built APK before installation. An APK
+missing the expected marker is rejected. The native host hash/marker result is
+saved with settings backups as built-host.json. Verification-only mode remains
+usable from an older folder and does not build or mutate the phone.
+
+From the user's existing ZIP extraction:
+
+```bash
+curl -fL https://raw.githubusercontent.com/kianborg/nx2android-mk8-deluxe/main/devtools/build_install_mk8.py -o devtools/build_install_mk8.py
+python devtools/build_install_mk8.py --update-source
+```
+
+The helper retains the supplied defaults and enables Turnip/CPU BC after the
+install as before. The build should report `Built APK verified: alias-change
+code is present.` Then test gameplay, including acceleration/braking and other
+lights. Device validation and a focused upstream PR are still pending; the
+older installed runtime's flicker does not validate or disprove the candidate.
+
+Workflow tests cover old-source rejection, stale-APK rejection before install,
+fresh-helper re-execution with unchanged file/device arguments, original-folder
+preservation, unsafe/invalid archive rejection, and executable-bit restoration,
+in addition to the previous build/install/settings tests.

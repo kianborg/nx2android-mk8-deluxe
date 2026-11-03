@@ -7,6 +7,8 @@ import subprocess
 import sys
 import tempfile
 import unittest
+import zipfile
+import io
 from unittest.mock import patch
 
 spec=importlib.util.spec_from_file_location('mk8_builder',Path(__file__).resolve().parents[1]/'devtools/build_install_mk8.py')
@@ -37,14 +39,18 @@ class BuildInstallMk8(unittest.TestCase):
         self.assertEqual(result,'# phone\nDM_LANG=fr\nNEW_SETTING=1\nDM_VK_DRIVER=turnip\nDM_VK_BC_DECODE=1\n')
         self.assertEqual(tool.enable_turnip('DM_LANG=en-US\n',None),'DM_LANG=en-US\nDM_VK_DRIVER=turnip\nDM_VK_BC_DECODE=1\n')
 
-    def workflow(self, failure=None, previous='DM_LANG=fr\nDM_VK_DRIVER=system\n'):
+    def workflow(self, failure=None, previous='DM_LANG=fr\nDM_VK_DRIVER=system\n', source_fix=True, apk_fix=True):
         with tempfile.TemporaryDirectory() as tmp:
             root=Path(tmp);folder=root/'Game Folder';folder.mkdir()
+            source=root/'nxnative/dm/android/gfx_vk_exec.c';source.parent.mkdir(parents=True)
+            source.write_text('static void color_alias_map(' if source_fix else 'old source')
             keys=root/'prod.keys';keys.touch();driver=root/'turnip driver.zip';driver.touch()
             data=folder/'MarioKart8Deluxe-data';data.mkdir()
             (data/'nx2a-data.json').write_text(json.dumps({'package':tool.PACKAGE}))
             pack='DM_LANG=en-US\nNEW_SETTING=1\n'
-            (data/'env.txt').write_text(pack);(folder/'MarioKart8Deluxe.apk').touch()
+            (data/'env.txt').write_text(pack)
+            with zipfile.ZipFile(folder/'MarioKart8Deluxe.apk','w') as z:
+                z.writestr('lib/arm64-v8a/libdmhost.so',b'inactive colour attachment alias:' if apk_fix else b'old host')
             args=argparse.Namespace(game_folder=folder,keys=keys,driver=driver,jobs=2)
             events=[];adb=FakeAdb(events,previous);commands=[]
             def run(command, **options):
@@ -54,11 +60,13 @@ class BuildInstallMk8(unittest.TestCase):
                 if action==failure:raise subprocess.CalledProcessError(1,command)
                 if action=='install':adb.env=pack
             with patch.object(tool.subprocess,'run',side_effect=run):
-                if failure:
-                    with self.assertRaises(subprocess.CalledProcessError):tool.build_and_install(args,adb,repo=root)
+                if failure or not source_fix or not apk_fix:
+                    error = subprocess.CalledProcessError if failure else ValueError
+                    with self.assertRaises(error):tool.build_and_install(args,adb,repo=root)
                     self.assertNotIn('push',events)
                     self.assertEqual(adb.env,previous)
-                    if failure=='port':self.assertEqual(len(commands),1)
+                    if failure=='port' or not apk_fix:self.assertEqual(len(commands),1)
+                    if not source_fix:self.assertEqual(len(commands),0)
                     return
                 backup=tool.build_and_install(args,adb,repo=root)
             self.assertEqual(commands[0][commands[0].index('--jobs')+1],'2')
@@ -113,3 +121,40 @@ class BuildInstallMk8(unittest.TestCase):
                 self.assertIsNone(report['local_source_has_alias_helper'])
                 self.assertEqual(len(report['installed_host']['sha256']),64)
                 self.assertTrue(all(not path.exists() for path in pulled))
+
+
+    def test_old_source_stops_before_build(self):self.workflow(source_fix=False)
+    def test_stale_built_apk_stops_before_install(self):self.workflow(apk_fix=False)
+
+    def test_source_update_reexecutes_fresh_helper_and_preserves_paths(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root=Path(tmp);(root/'keep.txt').write_text('original folder')
+            source_zip=io.BytesIO()
+            with zipfile.ZipFile(source_zip,'w') as z:
+                z.writestr('fork-main/nxnative/dm/android/gfx_vk_exec.c','static void color_alias_map(')
+                info=zipfile.ZipInfo('fork-main/devtools/build_install_mk8.py');info.external_attr=0o100755<<16
+                z.writestr(info,'# fresh helper')
+            payload=source_zip.getvalue()
+            args=argparse.Namespace(game_folder=root/'Game Folder',keys=root/'prod.keys',
+                                    driver=root/'Turnip.zip',jobs=2,device='phone-serial')
+            with patch.object(tool.urllib.request,'urlopen',return_value=io.BytesIO(payload)) as download, \
+                 patch.object(tool.subprocess,'run') as run:
+                fresh=tool.update_source_and_run(args,repo=root)
+            self.assertEqual((root/'keep.txt').read_text(),'original folder')
+            self.assertTrue(tool.has_alias_source(fresh))
+            self.assertTrue((fresh/'devtools/build_install_mk8.py').stat().st_mode & 0o111)
+            self.assertEqual(download.call_args.args,(tool.SOURCE_URL,))
+            command=run.call_args.args[0]
+            self.assertEqual(command[:2],[sys.executable,str(fresh/'devtools/build_install_mk8.py')])
+            self.assertNotIn('--update-source',command)
+            self.assertEqual(command[-2:],['--device','phone-serial'])
+            self.assertIn(str(args.game_folder),command)
+            self.assertEqual(run.call_args.kwargs,{'cwd':fresh,'check':True})
+
+    def test_source_extract_rejects_escape_paths_and_missing_fix(self):
+        for member in ('../escape.txt','fork-main/README.md'):
+            with self.subTest(member=member),tempfile.TemporaryDirectory() as tmp:
+                root=Path(tmp);archive=root/'source.zip'
+                with zipfile.ZipFile(archive,'w') as z:z.writestr(member,'old source')
+                with self.assertRaises(ValueError):tool.extract_source(archive,root/'extract')
+                self.assertFalse((root/'escape.txt').exists())

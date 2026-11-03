@@ -10,11 +10,15 @@ import shlex
 import subprocess
 import sys
 import tempfile
+import urllib.request
+import shutil
+import stat
 
 REPO = Path(__file__).resolve().parents[1]
 PACKAGE = 'org.nx2a.t0100152000022000'
 REMOTE = f'/sdcard/Android/data/{PACKAGE}/files/env.txt'
 TURNIP = {'DM_VK_DRIVER': 'turnip', 'DM_VK_BC_DECODE': '1'}
+SOURCE_URL = 'https://github.com/kianborg/nx2android-mk8-deluxe/archive/refs/heads/main.zip'
 
 
 def enable_turnip(installed, previous):
@@ -81,6 +85,59 @@ def verify_install(adb, repo=REPO):
     return archive
 
 
+def has_alias_source(repo):
+    source = repo/'nxnative/dm/android/gfx_vk_exec.c'
+    return source.is_file() and 'static void color_alias_map(' in source.read_text()
+
+
+def extract_source(archive_path, destination):
+    destination.mkdir(parents=True,exist_ok=True)
+    with zipfile.ZipFile(archive_path) as archive:
+        entries = archive.infolist()
+        if sum(entry.file_size for entry in entries)>4*1024**3:
+            raise ValueError('Source archive exceeds extraction limit')
+        root = destination.resolve()
+        for entry in entries:
+            name = entry.filename
+            if stat.S_ISLNK(entry.external_attr>>16):
+                raise ValueError('Source archive contains an unsupported symbolic link')
+            if '\\' in name or not (root/name).resolve().is_relative_to(root):
+                raise ValueError('Source archive contains an unsafe path')
+        archive.extractall(root)
+        # zipfile drops Unix executable bits; the source contains build tools.
+        for entry in entries:
+            if not entry.is_dir() and (entry.external_attr>>16)&0o111:
+                path=root/entry.filename
+                path.chmod(path.stat().st_mode | ((entry.external_attr>>16)&0o111))
+    candidates = [path for path in root.iterdir() if path.is_dir() and
+                  (path/'devtools/build_install_mk8.py').is_file() and has_alias_source(path)]
+    if len(candidates)!=1:
+        raise ValueError('Downloaded source does not contain the expected MK8 fix and build helper')
+    return candidates[0]
+
+
+def update_source_and_run(args, repo=REPO):
+    work = repo/'work'
+    work.mkdir(exist_ok=True)
+    destination = Path(tempfile.mkdtemp(prefix='mk8-updated-source-', dir=work))
+    archive = destination/'source.zip'
+    print(f'Downloading updated fork source into {destination} ...', flush=True)
+    with urllib.request.urlopen(SOURCE_URL,timeout=120) as response, archive.open('wb') as output:
+        shutil.copyfileobj(response,output)
+    fresh = extract_source(archive,destination/'extracted')
+    print(f'Building from updated source: {fresh}',flush=True)
+    command = [sys.executable,str(fresh/'devtools/build_install_mk8.py'),
+               '--game-folder',str(args.game_folder.expanduser().resolve()),
+               '--keys',str(args.keys.expanduser().resolve()),
+               '--driver',str(args.driver.expanduser().resolve()),'--jobs',str(args.jobs)]
+    if args.device:
+        command += ['--device',args.device]
+    # Preserve the Python environment, toolchain configuration and signing key.
+    # Re-execution ensures porter imports/build paths refer to the fresh source.
+    subprocess.run(command,cwd=fresh,check=True)
+    return fresh
+
+
 def build_and_install(args, adb, repo=REPO):
     folder, keys, driver = (path.expanduser().resolve() for path in (args.game_folder, args.keys, args.driver))
     if not folder.is_dir():
@@ -90,6 +147,8 @@ def build_and_install(args, adb, repo=REPO):
             raise ValueError(f'File not found: {path}')
     if args.jobs < 1:
         raise ValueError('--jobs must be positive')
+    if not has_alias_source(repo):
+        raise ValueError('This source folder lacks the MK8 alias change. Run this helper with --update-source to build from a fresh fork download.')
     serial = adb.pick()
     print('Building MK8 from the current source folder...', flush=True)
     subprocess.run([sys.executable, '-m', 'porter', 'port', str(folder), '-k', str(keys),
@@ -102,6 +161,11 @@ def build_and_install(args, adb, repo=REPO):
     if not apk.is_file():
         raise ValueError(f'Built APK not found: {apk}')
 
+    host = native_host_info(apk)
+    if not host['alias_fix_marker_present']:
+        raise ValueError('Built APK lacks the expected alias-change code; installation stopped. Retry with --update-source.')
+    print('Built APK verified: alias-change code is present.',flush=True)
+
     # The installer overwrites env.txt. Retain the phone's choices first.
     work = repo/'work'
     work.mkdir(exist_ok=True)
@@ -113,6 +177,7 @@ def build_and_install(args, adb, repo=REPO):
     if previous is not None:
         (backup/'env-before.txt').write_text(previous, encoding='utf-8')
     (backup/'pack-env.txt').write_bytes((data/'env.txt').read_bytes())
+    (backup/'built-host.json').write_text(json.dumps(host,indent=2)+'\n',encoding='utf-8')
     print(f'Settings backup: {backup}', flush=True)
     print('Installing APK and data pack...', flush=True)
     subprocess.run([sys.executable, '-m', 'porter', 'install', str(data), '--apk', str(apk),
@@ -141,8 +206,16 @@ def main():
     parser.add_argument('--driver', type=Path, default=home/'Downloads/turnip_v24.3.0_R9v2.zip')
     parser.add_argument('--jobs', type=int, default=2)
     parser.add_argument('--device', help='ADB serial, otherwise use the configured or only connected device')
-    parser.add_argument('--verify-only', action='store_true', help='inspect the installed runtime and log without building, installing or changing phone settings')
+    actions = parser.add_mutually_exclusive_group()
+    actions.add_argument('--verify-only', action='store_true', help='inspect the installed runtime and log without building, installing or changing phone settings')
+    actions.add_argument('--update-source', action='store_true', help='download the latest fork into a separate folder and build/install from there')
     args = parser.parse_args()
+    if args.update_source:
+        try:
+            update_source_and_run(args)
+        except (OSError,ValueError,zipfile.BadZipFile,subprocess.CalledProcessError) as error:
+            parser.exit(1,f'Error: {error}\n')
+        return
     sys.path.insert(0, str(REPO))
     from porter import config, toolchain
     from porter.adb import Adb, AdbError
