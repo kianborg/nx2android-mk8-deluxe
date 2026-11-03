@@ -1188,3 +1188,39 @@ or install failure stops the workflow; the script never requests signer
 replacement. Phone installation has not been performed in the cloud; command
 ordering, settings preservation and failure handling are checked using fake ADB
 and porter subprocesses.
+
+### Flicker reported after candidate build: verify installed runtime first
+
+The user reports that flickering remains after the build/install script. The
+zero-normal captures remain evidence of the input fault; inactive attachment
+coalescing has not been confirmed to fix it on the device. A source ZIP can be
+older than a newly downloaded script, since the build helper intentionally uses
+its surrounding source folder. The next check verifies the installed native
+library rather than inferring code presence from the helper version or a missing
+log event.
+
+The build helper now accepts `--verify-only`. It selects the configured/only
+ADB device, copies the current log and settings locally, locates the installed
+base APK through `pm path`, and temporarily pulls it to inspect
+lib/arm64-v8a/libdmhost.so. It records the native-library SHA256, presence of the
+candidate's `inactive colour attachment alias:` code marker, whether the log
+contains an execution event, and whether the local source has the alias helper.
+The APK is deleted from the temporary directory and excluded from the report.
+No build/install, force-stop, cache change or settings write occurs.
+
+For the ZIP-based source folder:
+
+```bash
+curl -fL https://raw.githubusercontent.com/kianborg/nx2android-mk8-deluxe/main/devtools/build_install_mk8.py -o devtools/build_install_mk8.py
+python devtools/build_install_mk8.py --verify-only
+```
+
+Send the printed `work/mk8-runtime-check-*/mk8-runtime-check.zip`. The ZIP contains
+only log.txt, env.txt and runtime-check.json. A marker absent from the installed
+host establishes that this candidate's code is not there. A marker present with
+no log event does not establish why it did not execute. A marker/event present
+with continuing flicker warrants a post-change normal-buffer comparison, rather
+than claiming that the inactive-alias hypothesis is sufficient. Host tests use
+both old/new fake APKs, check the report contents and temporary-file removal,
+and reject unexpected phone commands. Normal device gameplay validation and the
+upstream PR remain pending.

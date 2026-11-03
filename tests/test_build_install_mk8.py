@@ -78,3 +78,38 @@ class BuildInstallMk8(unittest.TestCase):
     def test_first_install_uses_pack_defaults(self):self.workflow(previous=None)
     def test_build_failure_stops_before_install_or_settings_changes(self):self.workflow(failure='port')
     def test_install_failure_stops_before_settings_changes(self):self.workflow(failure='install')
+
+    def test_runtime_verification_reads_installed_apk_without_phone_mutations(self):
+        import zipfile
+        for has_fix in (False,True):
+            with self.subTest(has_fix=has_fix), tempfile.TemporaryDirectory() as tmp:
+                root=Path(tmp);calls=[];pulled=[]
+                class ReadOnlyAdb:
+                    def pick(self):return 'phone-serial'
+                    def shell(self, command):
+                        calls.append(command)
+                        if command!=f'pm path {tool.PACKAGE}':raise AssertionError('Unexpected phone command')
+                        return 'package:/data/app/example/base.apk\n'
+                    def run(self, *parts, **kw):
+                        calls.append(parts)
+                        if parts[:2]==('exec-out','cat'):
+                            if parts[2]==tool.REMOTE:return 'DM_VK_DRIVER=turnip\n'
+                            if parts[2]==tool.REMOTE.replace('/env.txt','/log.txt'):return 'current log\n'
+                        if parts[:2]==('pull','/data/app/example/base.apk'):
+                            path=Path(parts[2]);pulled.append(path)
+                            with zipfile.ZipFile(path,'w') as z:
+                                z.writestr('lib/arm64-v8a/libdmhost.so',b'host inactive colour attachment alias: slot' if has_fix else b'older host')
+                                z.writestr('assets/private.bin',b'not to be included')
+                            return ''
+                        raise AssertionError('Unexpected phone command')
+                with patch.object(tool.subprocess,'run',side_effect=AssertionError('No build/install allowed')):
+                    archive=tool.verify_install(ReadOnlyAdb(),repo=root)
+                with zipfile.ZipFile(archive) as z:
+                    self.assertEqual(set(z.namelist()),{'log.txt','env.txt','runtime-check.json'})
+                    report=json.loads(z.read('runtime-check.json'))
+                self.assertEqual(report['installed_host']['alias_fix_marker_present'],has_fix)
+                self.assertFalse(report['phone_changes'])
+                self.assertFalse(report['alias_event_in_log'])
+                self.assertIsNone(report['local_source_has_alias_helper'])
+                self.assertEqual(len(report['installed_host']['sha256']),64)
+                self.assertTrue(all(not path.exists() for path in pulled))

@@ -3,6 +3,8 @@
 import argparse
 from datetime import datetime
 import json
+import hashlib
+import zipfile
 from pathlib import Path
 import shlex
 import subprocess
@@ -30,6 +32,53 @@ def enable_turnip(installed, previous):
     rows = [row for row in rows if key(row) not in TURNIP]
     rows += [f'{name}={value}' for name, value in TURNIP.items()]
     return '\n'.join(rows) + '\n'
+
+
+def native_host_info(apk):
+    with zipfile.ZipFile(apk) as archive:
+        info = archive.getinfo('lib/arm64-v8a/libdmhost.so')
+        if info.file_size > 128*1024*1024:
+            raise ValueError('Native host exceeds the inspection limit')
+        host = archive.read(info)
+    return {'sha256': hashlib.sha256(host).hexdigest(),
+            'alias_fix_marker_present': b'inactive colour attachment alias:' in host}
+
+
+def verify_install(adb, repo=REPO):
+    """Read the installed host and current log; change nothing on the phone."""
+    serial = adb.pick()
+    work = repo/'work'
+    work.mkdir(exist_ok=True)
+    out = Path(tempfile.mkdtemp(prefix='mk8-runtime-check-', dir=work))
+    log = adb.run('exec-out', 'cat', REMOTE.replace('/env.txt', '/log.txt'))
+    env = adb.run('exec-out', 'cat', REMOTE)
+    (out/'log.txt').write_text(log, encoding='utf-8')
+    (out/'env.txt').write_text(env, encoding='utf-8')
+    paths = [line.removeprefix('package:').strip() for line in
+             adb.shell(shlex.join(['pm', 'path', PACKAGE])).splitlines() if line.startswith('package:')]
+    if not paths:
+        raise ValueError(f'Installed APK path not found. Available log: {out}')
+    base = next((path for path in paths if path.endswith('/base.apk')), paths[0])
+    with tempfile.TemporaryDirectory(prefix='mk8-apk-check-') as tmp:
+        local = Path(tmp)/'base.apk'
+        adb.run('pull', base, str(local), timeout=120)
+        info = native_host_info(local)
+    source = repo/'nxnative/dm/android/gfx_vk_exec.c'
+    report = {'package': PACKAGE, 'device': serial, 'installed_host': info,
+              'alias_event_in_log': 'inactive colour attachment alias:' in log,
+              'local_source_has_alias_helper': 'static void color_alias_map(' in source.read_text() if source.is_file() else None,
+              'phone_changes': False}
+    (out/'runtime-check.json').write_text(json.dumps(report, indent=2)+'\n', encoding='utf-8')
+    archive = out/'mk8-runtime-check.zip'
+    with zipfile.ZipFile(archive, 'x', zipfile.ZIP_DEFLATED) as z:
+        for name in ('log.txt', 'env.txt', 'runtime-check.json'):
+            z.write(out/name, name)
+    print(f'Alias-fix code marker in installed APK: {info["alias_fix_marker_present"]}')
+    print(f'Alias-removal event in current log: {report["alias_event_in_log"]}')
+    print(f'Alias helper in local source: {report["local_source_has_alias_helper"]}')
+    print(f'Report: {archive}')
+    print('Phone settings and app state were not changed. APK contents are not included in the report.')
+    return archive
 
 
 def build_and_install(args, adb, repo=REPO):
@@ -92,6 +141,7 @@ def main():
     parser.add_argument('--driver', type=Path, default=home/'Downloads/turnip_v24.3.0_R9v2.zip')
     parser.add_argument('--jobs', type=int, default=2)
     parser.add_argument('--device', help='ADB serial, otherwise use the configured or only connected device')
+    parser.add_argument('--verify-only', action='store_true', help='inspect the installed runtime and log without building, installing or changing phone settings')
     args = parser.parse_args()
     sys.path.insert(0, str(REPO))
     from porter import config, toolchain
@@ -102,8 +152,11 @@ def main():
         if not adb_path:
             raise ValueError('ADB not found. Configure it with: python -m porter config adb /path/to/adb')
         adb = Adb(adb_path, args.device or cfg.get('device'))
-        build_and_install(args, adb)
-    except (OSError, ValueError, subprocess.CalledProcessError, AdbError) as error:
+        if args.verify_only:
+            verify_install(adb)
+        else:
+            build_and_install(args, adb)
+    except (OSError, ValueError, KeyError, zipfile.BadZipFile, subprocess.CalledProcessError, AdbError) as error:
         parser.exit(1, f'Error: {error}\n')
 
 
