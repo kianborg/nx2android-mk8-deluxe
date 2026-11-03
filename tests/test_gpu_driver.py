@@ -7,12 +7,46 @@ import subprocess
 import tempfile
 import unittest
 import zipfile
+from types import SimpleNamespace
+from unittest.mock import patch
 from porter.gpu_driver import unpack_driver
 from porter.upstream import BuildError
 
 ROOT=Path(__file__).resolve().parents[1]
 
 class DriverPackage(unittest.TestCase):
+    def test_zip_and_library_packaging_after_upstream_merge(self):
+        from porter import pipeline
+        with tempfile.TemporaryDirectory() as folder:
+            root=Path(folder)
+            for driver in (None, root/'turnip.zip', root/'libturnip.so'):
+                with self.subTest(driver=driver):
+                    port=object.__new__(pipeline.Port)
+                    port.o=pipeline.Options(folder=root,out=root,vulkan_driver=driver)
+                    port.g=SimpleNamespace();port.app_name='MK8';port.pkg_ver='v0'
+                    port.so=root/'host/libdmhost.so';port.logs=root;port.env={}
+                    port.tools={'ndk':root/'ndk'}
+                    port.package='org.test';port.display='test';port.result={}
+                    port.ap=SimpleNamespace(landscape=True)
+                    port.icon=lambda:None;port.theme=lambda:[]
+                    def run(args,*a,**k):
+                        port.apk_path.write_bytes(b'fake APK')
+                    with patch.object(pipeline,'app_stem',return_value='MK8'), \
+                         patch.object(pipeline.paths,'signing_key',return_value=root/'key'), \
+                         patch.object(pipeline.nsp,'run',side_effect=run) as command, \
+                         patch('porter.gpu_driver.apk_args',return_value=['--asset','zip-notice=notice']) as archive:
+                        port.apk()
+                    args=command.call_args.args[0]
+                    if driver is None:
+                        archive.assert_not_called();self.assertNotIn('--extra-so',args)
+                    elif driver.suffix=='.zip':
+                        archive.assert_called_once();self.assertIn('zip-notice=notice',args)
+                        self.assertNotIn(driver,args)
+                    else:
+                        archive.assert_not_called();self.assertIn(str(driver),args)
+                        for name in pipeline.ADRENOTOOLS_LIBS:
+                            self.assertIn(str(port.so.parent/name),args)
+
     def test_arm64_package_and_notice_assets(self):
         with tempfile.TemporaryDirectory() as folder:
             p=Path(folder);elf=bytearray(64);elf[:6]=b'\x7fELF\x02\x01';struct.pack_into('<HH',elf,16,3,183)

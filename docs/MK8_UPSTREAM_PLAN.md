@@ -55,3 +55,20 @@ still need clean branches, dependency review and branch-specific validation.
 The full fork's last verification passed 137 tests (three optional analysis
 skips) and compiled the 142-source Android release host. Its post-sync race
 test was supplied by the reporter.
+
+## Subsequent upstream sync
+
+Merged upstream through `b352b9f`, including multithread replay, native custom
+driver packaging, shader fixes and tar-based data installation. The fork keeps
+its explicit Turnip loader and identity check (no silent fallback) and ZIP
+packaging, while accepting upstream .so packaging and its mt-replay option.
+The ZIP route remains opt-in via env.txt; .so inputs generate the upstream
+driver selection setting. Duplicate CLI/dataclass options were removed, and
+compute shader alternatives retain the fork's additional integer-input argument.
+Driver packaging regression covers system, ZIP and .so paths. The Android
+release host compiled 143 sources. This merged runtime needs a phone smoke test;
+earlier phone confirmation was before this merge.
+
+Upstream now has its own custom-driver integration, so the proposed Turnip PR
+needs to be reassessed as ZIP usability/validation and loader-policy differences,
+rather than presenting all driver support as new.
