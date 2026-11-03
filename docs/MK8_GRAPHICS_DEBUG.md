@@ -1097,3 +1097,63 @@ scene/test options with `status` inspect progress or `restore` recover settings.
 The next comparison checks whether the source normals are already blank, or
 whether valid source data fails to reach the slot-3 destination. No flicker fix
 or upstream PR is claimed until the responsible path is identified and retested.
+
+### Normal-copy archive: upstream source is blank; inactive attachment alias fix
+
+Both split volumes of `mk8-shadows-wheel-normals-capture.7z` were joined in
+numeric order and extracted outside the repository. All 16 source/destination
+normal pairs are present. Nine effect presents have zero RGB in **both** the
+full-resolution source and half-resolution destination: 9000, 9001, 9004, 9005,
+9006, 9007, 9011, 9012 and 9015. The other seven pairs contain detailed normals.
+This localizes the blank input upstream of downsampling for this capture. The
+user additionally confirms that kart and other light flicker are synchronized,
+consistent with their shared normal input. It does not alone explain every
+whole-screen flash.
+
+The traced scene pass at effect present 9000 binds the same full-resolution
+normal image and view subresource to colour slots **3 and 4** (serial 386836,
+1034x581, Vulkan format 64). Only slot 3 has a nonzero channel write mask; slot 4
+is masked off. The replay previously supplied both as separate Vulkan render
+attachments, each with its own load/store. The normal-copy shader then samples
+that image, already zero-filled. Duplicate attachment load/store behavior is a
+concrete candidate for the lost contents; changing shader lighting or the
+normal-copy calculation would not repair that source.
+
+The runtime now coalesces **inactive identical-view aliases**, preserving logical
+NVN slot numbering and the writer's fragment output location:
+
+- If an identical VkImageView is bound more than once, remove zero-write
+  duplicates from the physical Vulkan attachments. Keep the first writable slot,
+  or the first slot if no slot writes. Writable aliases are never silently
+  discarded. Multiple writable aliases remain outside this fix's scope.
+- Mark dropped slots undefined in pipeline formats and use unused attachment
+  references (or null views for dynamic rendering), so there is one physical
+  load/store for the inactive-alias case. Other image views/layers are untouched.
+- Route colour clears through the logical-to-physical alias mapping, including
+  clears folded into load operations and clears issued after a pass began.
+- End the pass before a channel-mask change alters the alias mapping, then begin
+  the next draw with the new writer. Changes that preserve the mapping need no
+  extra pass. Pending clears are committed by the existing pass-end path.
+
+This is a general Vulkan replay change, with no game/shader-key gate or diagnostic
+flag required. The first occurrence logs `inactive colour attachment alias` and
+the retained slot. Host regression checks compile the actual selector, mask-bind
+and clear functions: slot 3/4, reversed writer, no writers, multiple writers,
+different views, three aliases, channel-only changes, pass restart, folded/live
+clears through an inactive alias, and invalid clear indices. The full suite
+passes (127 tests, 3 optional NumPy checks skipped in the project venv; those
+analysis checks were run separately earlier). The release build compiles all
+142 sources and links. Phone confirmation is pending; this remains a candidate
+flicker fix until the user rebuilds and retests.
+
+For the user's ZIP-based source folder, obtain the complete updated fork source
+ZIP and extract separately. Rebuild/reinstall with the existing game files,
+Turnip ZIP, signing key and port settings, installing over the existing app.
+Test normal gameplay without arming a
+new diagnostic: stationary, acceleration, braking, kart illumination, nearby
+lights and shadows, and any whole-screen flashes. Existing capture collection
+restored the prior rendering settings. Report remaining flicker or regressions;
+if symptoms persist, the existing normal-copy mode can verify whether the source
+still becomes blank. A focused upstream PR should follow device confirmation,
+with this evidence and the general alias/clear regression, rather than claiming
+all broader flashing fixed from the host checks alone.
