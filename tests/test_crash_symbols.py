@@ -13,7 +13,9 @@ class CrashSymbols(unittest.TestCase):
     def test_hidden_native_symbol_and_raw_address(self):
         source = (ROOT/'nxnative/dm/host/crash.c').read_text()
         start = source.index('void crash_off(')
-        function = source[start:source.index('// Frame pointer backtrace', start)]
+        formatter_start = source.index('int crash_addr_str(')
+        formatter = source[formatter_start:source.index('// A return address', formatter_start)]
+        function = formatter + source[start:source.index('// Frame pointer backtrace', start)]
         code = r'''
 #include <stdint.h>
 #include <stdio.h>
@@ -34,4 +36,4 @@ int main(void) {crash_off("pc",0x1128);fputc('\n',stderr);crash_off("lr",0x2004)
             src=Path(folder)/'test.c';src.write_text(code);exe=Path(folder)/'test'
             subprocess.run(['cc',str(src),'-o',str(exe)],check=True)
             result=subprocess.run([str(exe)],capture_output=True,text=True,check=True)
-            self.assertEqual(result.stderr,' pc=libnx2a_turnip.so+0x128\n lr=known_function+0x4\n pc=0xdead')
+            self.assertEqual(result.stderr,' pc=libnx2a_turnip.so+0x128\n lr=libc.so+0x1004(known_function+0x4)\n pc=0xdead')
