@@ -73,7 +73,7 @@ def pass_files(log, frame, frames=1):
 def capture_progress(log):
     # The shader-filter marker is emitted when dumping starts, not at launch.
     # Use existing progress messages without inferring runtime capabilities.
-    values = re.findall(r'replay up to present (\d+)|frame trace begins at present (\d+)|pass capture(?: draw| input)?: present (\d+)', log)
+    values = re.findall(r'replay up to present (\d+)|frame trace begins at present (\d+)|pass capture(?: draw| input)?: present (\d+)|\[longframe\] frame (\d+)|timing up to frame (\d+)', log)
     return max((int(value) for row in values for value in row if value), default=None)
 
 
@@ -115,9 +115,9 @@ def input_files(log, frame, frames):
     found = {}
     for present, index, binding, fmt in re.findall(
             r'pass capture input: present (\d+) pass \d+ dump (\d+) binding (\d+) format (\d+)', log):
-        if int(index) in raw and ((int(binding), int(fmt)) in ((1,64),(2,76))):
-            found.setdefault(int(present),set()).add(int(binding))
-    if len([v for v in found.values() if v >= {1,2}]) < min(frames,8):
+        if int(index) in raw and int(binding) in (1,2) and int(fmt) in (64,76):
+            found.setdefault(int(present),set()).add(int(fmt))
+    if len([v for v in found.values() if v >= {64,76}]) < min(frames,8):
         raise ValueError('Missing normal/linear-depth inputs. Preserve this log and use status to check progress/settings; missing inputs alone do not prove an outdated APK.')
     return files
 

@@ -172,6 +172,8 @@ class MenuCaptureTests(unittest.TestCase):
         files=capture.input_files(log,9000,16)
         self.assertEqual(len(files),80)
         self.assertIn('pass_03.ppm.raw',files)
+        swapped=log.replace('binding 1 format 64','binding 1 format TEMP').replace('binding 2 format 76','binding 2 format 64').replace('binding 1 format TEMP','binding 1 format 76')
+        self.assertEqual(capture.input_files(swapped,9000,16),files)
         for invalid in (log.replace('binding 1 format 64','binding 1 format 76'),log.replace('raw format','no raw')):
             with self.assertRaises(ValueError):capture.input_files(invalid,9000,16)
 
@@ -193,3 +195,4 @@ class MenuCaptureTests(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, 'does not establish which APK'):
             capture.motion_files('replay up to present 9600: draws 123\n',9000,16)
         self.assertEqual(capture.capture_progress(log+'pass capture draw: present 9012 pass 18\n'),9012)
+        self.assertEqual(capture.capture_progress('[dm] [longframe] frame 3392 (119.01 s) whole frame 35 ms'),3392)

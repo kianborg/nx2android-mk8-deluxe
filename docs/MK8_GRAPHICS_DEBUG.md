@@ -857,7 +857,7 @@ The draw/uniform records identify the four nearby cyan wheel lights as fragment
 shader **30b45cd2223d3964**, sharing vertex shader 35696712904ac390 with the
 13 lights using fragment shader 0722cc0403877a4e. Wheel lights remain submitted
 through all 16 captured presents. The wheel shader writes diffuse output zero;
-its SPIR-V samples normals at binding 1 and linear depth at binding 2, reconstructs
+its SPIR-V samples normals at binding 2 and linear depth at binding 1, reconstructs
 surface position, and evaluates clamped Lambert lighting and distance falloff.
 It has no discard operation. Its uniforms do not simply turn off on dark frames.
 
@@ -963,3 +963,52 @@ collect. Do not run start again in the existing folder. If the marker remains
 missing after the schedule, inspect/share status-log.txt and the status output
 before choosing a rebuild or new capture. If settings have already been
 restored or changed, status reports the mismatch rather than overwriting them.
+
+### November 3 status log and input-role correction
+
+The supplied status-log.txt ends at long frame 3392, 119.01 seconds after launch;
+last periodic replay progress is 3000. No scheduled capture/trace/dump marker or
+crash appears. For target 9000, the run is early. The helper now counts long-frame
+and timing messages too, so status reports 3392 instead of only 3000. This does
+not identify the APK's capture version, since capture initialization has not run.
+No rebuild is justified solely by this log.
+
+The fork was synced through upstream 3433389: compressed-image attachment usage
+and block-sized render areas (b30385e, MK8 device loss), pipeline/thread crash
+notes (3433389), and empty-pool command-memory allocation lengths (8e030b4).
+The merge preserves CPU BC decode/raw-block shadows; native compressed views
+use upstream's new extent correction. Crash symbol regression now checks the
+upstream library-plus-offset formatter. All 121 merge tests and the release
+runtime build passed. These commits do not establish a wheel flicker fix.
+
+While preparing the diffuse reference, a collector assumption was corrected:
+FS 0722cc0403877a4e binds normal format 64 at 1 and depth format 76 at 2, whereas
+wheel FS 30b45cd2223d3964 binds **depth at 1, normals at 2**. The runtime captures
+both slots and records formats correctly. The old collector would reject a
+valid pass ending on the wheel shader. It now requires both formats, regardless
+of that order. This correction is helper-only and does not need another APK.
+The regression includes both slot orders and rejects two images of one format.
+
+For the existing armed run, pull the helper update, use `status` with the same
+scene/test/output, and keep the race open until present 9000 and the capture
+window have passed. Then retry `collect`, without another `start`. Each app
+launch restarts the frame counter; if the app was closed, reopening it with the
+capture settings still armed begins the delay again. Status reports whether the
+phone settings still match. If they do not, preserve the folder and inspect the
+status output before rearming anything.
+
+`devtools/analyze_wheel_inputs.py <extracted capture folder>` is ready for the
+sampled-input archive. It requires optional NumPy (`python -m pip install numpy`)
+and writes wheel-inputs-report.json beside the input files. It decodes packed
+normal/light formats and half-float linear depth, then evaluates the recorded
+wheel shader's unoccluded Lambert/falloff equations in float64. It reports pixels
+with strong predicted green but very little actual green as candidates, not a
+verdict: real mesh coverage/depth/stencil, GPU input contents, other light shaders,
+FMA precision, and unverified sampling remain limitations. An analytic facing/
+attenuation check, packed-format checks, and a complete synthetic capture with
+swapped bindings verify the parser/model. It correctly refuses the older motion
+archive, which has no sampled inputs. Phone validation is still pending.
+
+The user would like an upstream pull request after the flicker is fixed. Prepare
+one focused on the confirmed cause, dependencies and validation after a device
+retest; do not describe the diagnostic changes as a completed runtime fix.
