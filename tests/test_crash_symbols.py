@@ -15,7 +15,7 @@ class CrashSymbols(unittest.TestCase):
         start = source.index('void crash_off(')
         formatter_start = source.index('int crash_addr_str(')
         formatter = source[formatter_start:source.index('// A return address', formatter_start)]
-        function = formatter + source[start:source.index('// Frame pointer backtrace', start)]
+        function = formatter + source[start:source.index('\n}', start)+2]
         code = r'''
 #include <stdint.h>
 #include <stdio.h>

@@ -1931,10 +1931,14 @@ static VkPipeline compute_build(vkshader_t *cs, uint64_t um, uint64_t im) {   //
 }
 // Compute pipelines made ahead. One depends only on its shader (and integer-texel variants, rare), and building one costs Adreno 45-105 ms: Super Mario Odyssey's
 // particle emitters run on compute shaders (EffectPtcl), and the first cap throw at a breakable object built one on the replay thread (a 65 ms frame), the first scenes
-// several. A game has few (Odyssey 41), so at the first submission a background thread builds every compute shader in the bundle with no integer-texel variant
+// several. A game has few (Odyssey 41), so at the first submission a background thread builds every compute shader in the bundle with no integer-texel variant (up to a cap, below)
 static void *compute_warm(void *arg) {
     (void)arg; pthread_setname_np(pthread_self(), "vk compute warm"); setpriority(PRIO_PROCESS, 0, 10);
     int vk_shader_keys(uint32_t stage, uint64_t *out, int max); static uint64_t keys[4096]; int n = vk_shader_keys(5, keys, 4096), made = 0; uint64_t t0 = tick();
+    // A bundle with many compute shaders is left to the replay: Monster Hunter Rise's (4096 or more) held ~550 MB more from the title on, and a Retroid Pocket 5
+    // (Adreno 650, 8 GB) ran out of GPU memory loading the first area (vkAllocateMemory -2 at a 4 MB pool). DM_VK_COMPUTE_WARM_MAX (start-up, default 256): the most made ahead
+    { const char *e = getenv("DM_VK_COMPUTE_WARM_MAX"); int cap = e ? atoi(e) : 256;
+      if (n > cap) { VKLOG("compute pipelines made ahead: none, the bundle has %d%s compute shaders (more than %d, DM_VK_COMPUTE_WARM_MAX)", n, n == 4096 ? " or more" : "", cap); return NULL; } }
     for (int i = 0; i < n; i++) {
         uint64_t ck[3] = {keys[i], 0, 0};
         pthread_mutex_lock(&g_cpipe_mu); int have = nvn_hm_get(&g_cpipes, ck) != NULL; pthread_mutex_unlock(&g_cpipe_mu);
@@ -1956,6 +1960,10 @@ static void dispatch(const p_dispatch *d) {
     vk_end_pass_land();
     VkCommandBuffer cb = vk_cmd();
     VkDescriptorSetLayout dsl[5] = {cs->dsl}; VkPipelineLayout layout = vk_pipeline_layout(dsl, 1);
+    // the group counts before the descriptors: the driver segment stage_set builds carries them at c0 + 0x200 (drv_segment), as nvn_mtl.m's does. Set after it, every
+    // dispatch read the previous one's: Link's Awakening's light culling (tile = workgroup y × c0[0x200] + workgroup x) ran after a 2x1x1 dispatch, so of its 30x17
+    // tiles it wrote only 0-61. An indirect dispatch's counts are on the GPU only (0 here; nvn_mtl.m copies them in)
+    g_dispatch[0] = (uint32_t)d->x; g_dispatch[1] = (uint32_t)d->y; g_dispatch[2] = (uint32_t)d->z;
     uint32_t dofs[96]; VkDescriptorSet set = stage_set(5, cs, dofs);
     uint64_t ck[3] = {cs->key, g_num_um, g_num_im};
     pthread_mutex_lock(&g_cpipe_mu); VkPipeline p = nvn_hm_get(&g_cpipes, ck); pthread_mutex_unlock(&g_cpipe_mu);
@@ -1966,7 +1974,6 @@ static void dispatch(const p_dispatch *d) {
         pthread_mutex_unlock(&g_cpipe_mu);
     }
     if (p == (void *)1) return;
-    g_dispatch[0] = (uint32_t)d->x; g_dispatch[1] = (uint32_t)d->y; g_dispatch[2] = (uint32_t)d->z;
     vk_img_barrier_all(cb);
     vkCmdBindPipeline(cb, VK_PIPELINE_BIND_POINT_COMPUTE, p);
     vkCmdBindDescriptorSets(cb, VK_PIPELINE_BIND_POINT_COMPUTE, layout, 0, 1, &set, (uint32_t)cs->ndyn, dofs);
@@ -1976,7 +1983,10 @@ static void dispatch(const p_dispatch *d) {
     vk_pass_ts(1, (uint32_t)d->x, (uint32_t)d->y, PT_DISPATCH, (uint32_t)d->z);
     if (!g_x_nodispbar) vk_img_barrier_all(cb);   // DM_VK_X_NODISPBAR=1 (live, a cost measurement that may draw wrong): no barrier after the dispatch
     if (crumbs_on()) { crumb_t *c = crumb_cur(); if (c->n < 8) { c->k[c->n][0] = 0; c->k[c->n][1] = 0; c->k[c->n][2] = cs->key; c->n++; } crumb_mark(1); }
-    if (g_x_tracepass == -2) VKLOG("--- dispatch %016llx %dx%dx%d%s after pass %d", (unsigned long long)cs->key, d->x, d->y, d->z, d->ind ? " (indirect)" : "", g_sub_pass - 1);   // (DM_VK_TRACE_PASS=-2 lists the dispatches too)
+    if (g_x_tracepass == -2) {   // (DM_VK_TRACE_PASS=-2 lists the dispatches too, with their storage buffers: the addresses for a DM_CTL memdump)
+        char sb[512]; int o = 0; for (int r = 0; r < 16 && o < (int)sizeof sb - 40; r++) if (S.ssbo[5][r].addr) o += snprintf(sb + o, sizeof sb - (size_t)o, " s%d %#llx+%#llx", r, (unsigned long long)S.ssbo[5][r].addr, (unsigned long long)S.ssbo[5][r].size);
+        VKLOG("--- dispatch %016llx %dx%dx%d%s after pass %d;%s", (unsigned long long)cs->key, d->x, d->y, d->z, d->ind ? " (indirect)" : "", g_sub_pass - 1, o ? sb : " no storage buffers");
+    }
 }
 
 // ---------------- copies and clears ----------------
@@ -2266,9 +2276,13 @@ static void exec_ops(const uint8_t *p) {
         case OP_REPORT_COUNTER: { uint64_t t, ad; memcpy(&t, a, 8); memcpy(&ad, a + 8, 8); if (DM_GAME_RENDER_COND) rc_note(ad, t == 0 || t == 0x10 ? 1 : 2); mtl_sub_counter(ad, (uint32_t)t); break; }
         case OP_RESET_COUNTER: break;
         case OP_FENCE_SYNC: { sync_t *s; memcpy(&s, a, 8); s->fence = mtl_last_fence() + 1; s->fenced = 1; break; }
-        case OP_COPY_B2B: { uint64_t s_, d, n; memcpy(&s_, a, 8); memcpy(&d, a + 8, 8); memcpy(&n, a + 16, 8); mtl_sub_copy(s_, d, n); break; }
-        case OP_CLEAR_BUF: { const p_clear_buf *c = (const p_clear_buf *)a; mtl_sub_fill(c->addr, c->size, c->value); break; }
-        case OP_UPDATE_UB: { uint64_t d, n; memcpy(&d, a, 8); memcpy(&n, a + 8, 8); vk_sub_update(d, a + 16, n); break; }
+        // (DM_VK_TRACE_PASS=-2 lists the buffer writes too: copies, clears and uniform updates, by address)
+        case OP_COPY_B2B: { uint64_t s_, d, n; memcpy(&s_, a, 8); memcpy(&d, a + 8, 8); memcpy(&n, a + 16, 8); mtl_sub_copy(s_, d, n);
+            if (g_x_tracepass == -2) VKLOG("--- copy %#llx → %#llx, %llu bytes, after pass %d", (unsigned long long)s_, (unsigned long long)d, (unsigned long long)n, g_sub_pass - 1); break; }
+        case OP_CLEAR_BUF: { const p_clear_buf *c = (const p_clear_buf *)a; mtl_sub_fill(c->addr, c->size, c->value);
+            if (g_x_tracepass == -2) VKLOG("--- buffer clear %#llx, %llu bytes to %#x, after pass %d", (unsigned long long)c->addr, (unsigned long long)c->size, c->value, g_sub_pass - 1); break; }
+        case OP_UPDATE_UB: { uint64_t d, n; memcpy(&d, a, 8); memcpy(&n, a + 8, 8); vk_sub_update(d, a + 16, n);
+            if (g_x_tracepass == -2) VKLOG("--- uniform update %#llx, %llu bytes, after pass %d", (unsigned long long)d, (unsigned long long)n, g_sub_pass - 1); break; }
         case OP_SET_RT: set_rt((const p_set_rt *)a); break;
         case OP_CLEAR_COLOR: if (!g_rc_skip) clear_color((const p_clear_color *)a); break;
         case OP_CLEAR_DS: if (!g_rc_skip) clear_ds((const p_clear_ds *)a); break;

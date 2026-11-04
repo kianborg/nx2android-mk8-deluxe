@@ -62,7 +62,7 @@ void vkCmdCopyBufferToImage(VkCommandBuffer cb, VkBuffer b, VkImage im, VkImageL
         assert(((uint8_t *)(uintptr_t)b)[s*w*h + i] == expected[r->imageSubresource.baseArrayLayer][r->imageSubresource.mipLevel] + s);
     calls++;
 }
-''' + upload + r'''
+''' + source[source.index('static uint64_t pkg_hash('):source.index('\n}',source.index('static uint64_t pkg_hash('))+2] + upload + r'''
 static void reset(void) { memset(g_fmt, 0, sizeof g_fmt); memset(g_fmt_done, 0, sizeof g_fmt_done); }
 // Decode the selected Vulkan packed format by Vulkan's bit layout, not its
 // spelling in NVN. NVN RGB565 stores R in bits 0..4; Vulkan R5G6B5 stores R
