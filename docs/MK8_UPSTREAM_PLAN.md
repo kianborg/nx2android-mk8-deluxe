@@ -72,3 +72,26 @@ earlier phone confirmation was before this merge.
 Upstream now has its own custom-driver integration, so the proposed Turnip PR
 needs to be reassessed as ZIP usability/validation and loader-policy differences,
 rather than presenting all driver support as new.
+
+## 2026-11-05 upstream sync
+
+Upstream main advanced to `a8adac1`. All three initial graphics PRs are now
+merged: #86 (attachment aliases), #87 (RGB565), and #89 (view selectors).
+PR #96 remains a separate pending contribution; its head and the dependent
+ordered-upload branch are not rewritten by this main-branch sync.
+
+Conflicts occurred in README.md, gfx_vk.h, gfx_vk_exec.c, gfx_vk_shader.c,
+android/tools/shader_vk.py, porter/cli.py, porter/install.py and porter/pipeline.py.
+Resolution retains the fork's CPU BC paths, vertex/depth shader variants,
+Turnip ZIP support and capture tools alongside upstream geometry-stage
+variants/transform feedback, subgroup handling, readback tracking, zstd
+bundles, shared fonts, external-display packaging and RomFS install options.
+The shader cache fingerprints include both the bounded-worker and bundle tools;
+the translator keeps geometry variants and bounded worker progress reporting.
+
+The 145-source Android MK8 release host compiles and links successfully.
+The new Java regression harnesses require a JDK; a checksum-verified Temurin
+21.0.8+9 was extracted into the workspace toolchain directory for those checks.
+All 192 tests pass with three optional analysis skips. No game assets, signing
+credentials or device installation were involved. Device behavior after this
+merge still needs a gameplay smoke test.
