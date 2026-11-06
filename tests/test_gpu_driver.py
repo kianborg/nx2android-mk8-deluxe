@@ -28,7 +28,7 @@ class DriverPackage(unittest.TestCase):
                     port.tools={'ndk':root/'ndk'}
                     port.package='org.test';port.display='test';port.result={}
                     port.ap=SimpleNamespace(landscape=True)
-                    port.icon=lambda:None;port.theme=lambda:[]
+                    port.icon=lambda:[];port.theme=lambda:[]
                     def run(args,*a,**k):
                         port.apk_path.write_bytes(b'fake APK')
                     with patch.object(pipeline,'app_stem',return_value='MK8'), \

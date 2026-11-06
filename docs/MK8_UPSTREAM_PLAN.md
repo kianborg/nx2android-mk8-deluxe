@@ -95,3 +95,39 @@ The new Java regression harnesses require a JDK; a checksum-verified Temurin
 All 192 tests pass with three optional analysis skips. No game assets, signing
 credentials or device installation were involved. Device behavior after this
 merge still needs a gameplay smoke test.
+
+## 2026-11-06 sync and BC-upload overlap review
+
+Upstream through `4d1348c` includes #96 as `47779aa`. Conflicts in
+gfx_vk_tex.c, shader_vk.py, porter/cli.py, porter/pipeline.py and
+tests/test_bc_decode.py were resolved while preserving the fork's direct
+bounded-decoder integration, ZIP driver route and bounded shader workers.
+Upstream's integer-input second translation pass, headerless compute captures,
+adaptive icons and non-lib driver filename normalization are retained. The
+legacy-adapter-only tests from #96 do not apply to this fork's different format
+structure; its direct upload regressions remain, and the invalid-layout tests
+from #96 are retained. A cached-pool harness end marker was updated for
+upstream's sorted pool index; no production memory-allocation change was made
+for that test adjustment. All 196 tests complete successfully with three
+optional analysis skips, and the 145-source Android release host builds.
+
+Public GitHub pages show the reporter's four PRs #86/#87/#89/#96 as merged
+and no open PR from kianborg at review time. Upstream #97 is an unrelated
+issue, "Can't port even if TEMPEST", not the prepared BC-upload contribution.
+The `fix/ordered-bc-buffer-uploads` branch remains on top of #96's original
+commit and needs rebasing before submission; it has not been rewritten here.
+
+The current upstream CPU-BC buffer-upload path still decodes directly from
+`c->src` in gfx_vk_exec.c copy_b2t (line 1987 at 4d1348c), without a mid-replay
+GPU snapshot. Merged #95 provides copied-pool merging at submission completion;
+merged #68 fixes native compressed-image attachment usage and block-sized
+render areas. Neither replaces that snapshot. #96 explicitly identifies GPU
+readback as follow-up work. The open PR list and searches for BC, readback,
+buffer uploads and snapshots revealed no matching separate proposal. This is
+a scoped review of the public PRs, not a claim about unpublished work.
+
+The prepared upload correction is still relevant to CPU-decoded BC copies
+following GPU writes, but is not required for native-BC users. It should not be
+described as the first/general MK8 support: #68 already reports native-BC
+MK8 gameplay on Adreno 740. GitHub GraphQL access remained forbidden; public
+GitHub HTML and fetched upstream source supplied the review evidence.

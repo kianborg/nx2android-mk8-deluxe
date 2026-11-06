@@ -105,6 +105,18 @@ class BCDecode(unittest.TestCase):
     def test_swizzled_mips_arrays_cubes_and_3d(self):
         self.assertEqual(self.lib.test_bc_layouts(), 115)
 
+    def test_invalid_dimensions_formats_and_overflow_do_not_write(self):
+        src = C.create_string_buffer(16)
+        dst = C.create_string_buffer(bytes([0xab])*64, 64)
+        args = [0x42, 4, 4, 1, src, 16, 8, 8, dst, 64, 16, 64]
+        for index, value in [(0, 0), (0, 0x51), (1, 0), (1, 0xffffffff),
+                             (2, 0), (2, 0xffffffff), (3, 0),
+                             (6, C.c_size_t(-1).value), (10, C.c_size_t(-1).value)]:
+            bad = list(args)
+            bad[index] = value
+            self.assertEqual(self.decode(*bad), -1)
+            self.assertEqual(dst.raw, bytes([0xab])*64)
+
 
 class UnsignedCharBCDecode(BCDecode):
     """Android ARM uses unsigned plain char; signed endpoints must still decode."""
