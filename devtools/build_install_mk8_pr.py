@@ -16,7 +16,8 @@ import urllib.request
 import zipfile
 
 COMMIT = '4838e3c475866c7931dcb3c3fcc92acd26289120'
-PACKAGE = 'org.nx2a.t0100152000022000'
+PACKAGE = 'org.nx2a.t0100152000022000.prtest'
+LABEL = 'MK8 PR Test'
 REMOTE = f'/sdcard/Android/data/{PACKAGE}/files/env.txt'
 DRIVER = 'libmk8_pr_turnip.so'
 MARKER = b'BC buffer readback allocation failed'
@@ -130,7 +131,7 @@ def configure(adb, work, cpu, previous=None):
     adb.shell(shlex.join(['mv', '-f', temporary, REMOTE]))
     if adb.run('exec-out', 'cat', REMOTE).replace('\r\n', '\n') != result:
         raise ValueError(f'Settings verification failed. Backup: {backup}')
-    print(f'Installed isolated PR, mode: {"CPU BC test" if cpu else "native BC baseline"}.')
+    print(f'Configured {LABEL}, mode: {"CPU BC test" if cpu else "native BC baseline"}.')
     print(f'Settings backup: {backup}')
 
 
@@ -151,6 +152,8 @@ def main():
         if args.configure_only:
             work = args.configure_only.expanduser().resolve()
             receipt = json.loads((work / 'build.json').read_text())
+            if receipt.get('package') != PACKAGE:
+                raise ValueError('This receipt is not for the separate PR test app. Run a new build with this helper.')
             repo = Path(receipt['source'])
         else:
             game = args.game_folder.expanduser().resolve()
@@ -185,7 +188,8 @@ def main():
         library = driver_library(driver, work)
         output = work / 'port'
         command = [sys.executable, '-m', 'porter', 'port', str(game), '-k', str(keys),
-                   '--experimental', '--jobs', str(args.jobs), '--vulkan-driver', str(library), '-o', str(output)]
+                   '--experimental', '--package', PACKAGE, '--app-name', LABEL,
+                   '--jobs', str(args.jobs), '--vulkan-driver', str(library), '-o', str(output)]
         subprocess.run(command, cwd=repo, check=True)
         manifests = list(output.glob('*-data/nx2a-data.json'))
         if len(manifests) != 1 or json.loads(manifests[0].read_text()).get('package') != PACKAGE:
@@ -200,11 +204,12 @@ def main():
         if previous is not None:
             (work / 'env-before-install.txt').write_text(previous)
         (work / 'build.json').write_text(json.dumps({'commit': COMMIT, 'source': str(repo),
-            'apk': str(apk), 'host_sha256': sha, 'device': serial}, indent=2) + '\n')
+            'apk': str(apk), 'host_sha256': sha, 'device': serial, 'package': PACKAGE}, indent=2) + '\n')
         subprocess.run([sys.executable, '-m', 'porter', 'install', str(data), '--apk', str(apk),
                         '--device', serial], cwd=repo, check=True)
         configure(adb, work, args.cpu_bc, previous)
         print('APK:', apk)
+        print(f'Open {LABEL}. It has separate saves and settings from the working app.')
         print('Switch to CPU BC without rebuilding:')
         print(shlex.join([sys.executable, str(Path(__file__).resolve()), '--configure-only', str(work), '--cpu-bc']))
         print('The isolated branch lacks other MK8 fixes from the full fork. A failed CPU-mode launch alone does not prove a regression in this PR.')

@@ -78,6 +78,8 @@ class PRBuilder(unittest.TestCase):
                 self.assertNotIn('--replace-signer', command)
                 commands.append(command)
                 if command[3] == 'port':
+                    self.assertEqual(command[command.index('--package') + 1], tool.PACKAGE)
+                    self.assertEqual(command[command.index('--app-name') + 1], 'MK8 PR Test')
                     library = Path(command[command.index('--vulkan-driver') + 1])
                     self.assertEqual(library.name, tool.DRIVER)
                     out = Path(command[command.index('-o') + 1])
@@ -111,6 +113,12 @@ class PRBuilder(unittest.TestCase):
                         tool.main()
                     self.assertIn('DM_VK_X_BC_CPU=1', phone.env)
                     self.assertEqual(len(commands), 2)  # no rebuild/reinstall for mode switch
+                    working_package = 'org.nx2a.t0100152000022000'
+                    for call in phone.calls:
+                        text = call if isinstance(call, str) else ' '.join(map(str, call))
+                        self.assertNotIn(working_package + '/files', text)
+                        self.assertNotIn('force-stop ' + working_package + '\n', text + '\n')
+                        self.assertNotIn('pm path ' + working_package + '\n', text + '\n')
                     phone.host = tool.MARKER + b'different host'
                     before = phone.env
                     with patch.object(sys, 'argv', ['helper', '--configure-only', str(work)]):
@@ -135,6 +143,17 @@ class PRBuilder(unittest.TestCase):
             apk(root / 'old.apk', b'old host')
             with self.assertRaisesRegex(ValueError, 'lacks'):
                 tool.host_hash(root / 'old.apk')
+
+    def test_old_receipt_is_refused_before_phone_access(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            work = Path(tmp)
+            (work / 'build.json').write_text(json.dumps({'source': '/old/source',
+                'package': 'org.nx2a.t0100152000022000'}))
+            with patch.object(tool, 'dependencies'), patch('porter.adb.Adb') as adb, \
+                 patch.object(sys, 'argv', ['helper', '--configure-only', str(work)]):
+                with self.assertRaises(SystemExit):
+                    tool.main()
+                adb.assert_not_called()
 
     def test_missing_lz4_gives_same_interpreter_fix(self):
         real = tool.importlib.import_module
