@@ -205,6 +205,7 @@ static vkimg_t *img_new(const tex_t *t, const vkfmt_t *f) {
     VkMemoryRequirements req; vkGetImageMemoryRequirements(V.dev, im->img, &req);
     if ((ci.usage & (VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT | VK_IMAGE_USAGE_DEPTH_STENCIL_ATTACHMENT_BIT)) && im->w >= 256) { static int n; if (n++ < 16)   // UBWC check: a compressed target takes room for its metadata
         VKLOG("target %ux%u format %d%s: %llu bytes", im->w, im->h, f->vk, im->fixed_fmt ? " (format-listed)" : "", (unsigned long long)req.size); }
+    im->allocation_size = req.size;
     VkDeviceSize moff;
     if (!(im->mem = vk_image_memory(&req, vk_mem_type(req.memoryTypeBits, VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT, VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT), &moff, &im->sub))) {
         VKRED_ONCE(11, "image memory allocation failed (%llu bytes)", (unsigned long long)req.size); vkDestroyImage(V.dev, im->img, NULL); free(im); return NULL; }
@@ -306,7 +307,7 @@ extern uint64_t g_tex_frame;   // presents so far, for the packaged textures' la
 // last EVICT_KEEP presents go (their memory now holds another texture; one drawn again is made and filled again). Called with g_img_mu held
 enum { EVICT_KEEP = 60 };
 static uint64_t g_img_n, g_img_bytes, g_img_evicted;   // live images and their bytes, images evicted so far (vk_tex_sweep's line)
-static void img_drop(vkimg_t *im) { vk_lrz_forget(im); if (im->lin_mem) nvn_dirty_release(im->lin_mem, im->lin_len); if (im->packaged && !im->pkg_released && im->pkg_mem) nvn_dirty_release(im->pkg_mem, im->pkg_len); g_img_n--; g_img_bytes -= im->size > 0 ? (uint64_t)im->size : 0; alias_unlink(im); vk_tex_view_drop_all(im); if (im->sub) vk_defer_free_image_sub(im->img, im->sub); else vk_defer_free_image(im->img, im->mem); free(im); }
+static void img_drop(vkimg_t *im) { vk_lrz_forget(im); if (im->lin_mem) nvn_dirty_release(im->lin_mem, im->lin_len); if (im->packaged && !im->pkg_released && im->pkg_mem) nvn_dirty_release(im->pkg_mem, im->pkg_len); g_img_n--; g_img_bytes -= im->allocation_size; alias_unlink(im); vk_tex_view_drop_all(im); if (im->sub) vk_defer_free_image_sub(im->img, im->sub); else vk_defer_free_image(im->img, im->mem); free(im); }
 static void evict_overlaps(uint64_t pool, int64_t off, int64_t size) {
     akey ks[64]; int n = 0;
     for (uint32_t i = 0; i < g_by_key.cap && n < 64; i++) {
@@ -335,7 +336,7 @@ static vkimg_t *vk_tex_(const tex_t *t) {
     if (!im) {
         if (keyed) evict_overlaps(k.pool, t->off, (int64_t)t->L.size);
         im = img_new(t, f); if (!im) { pthread_mutex_unlock(&g_img_mu); return NULL; }
-        im->pool = k.pool; im->off = t->off; im->size = (int64_t)t->L.size; im->flags = t->d.flags; g_img_n++; g_img_bytes += t->L.size;
+        im->pool = k.pool; im->off = t->off; im->size = (int64_t)t->L.size; im->flags = t->d.flags; g_img_n++; g_img_bytes += im->allocation_size;
         if (keyed) { alias_link(im); nvn_hm_put(&g_by_key, &k, im); } else nvn_hm_put(&g_by_serial, &t->serial, im);
     }
     im->used = g_tex_frame;
@@ -493,6 +494,80 @@ static void vk_tex_view_drop_all(vkimg_t *im) {
     nvn_hm_del(&g_views, &im);
     pthread_mutex_unlock(&g_view_mu);
 }
+// Native BC views address one encoded block per integer pixel. Devices without
+// BC render those words into a small shadow, then decode them after the pass.
+// This follows nvn_mtl.m's bcrt_attach/bcrt_flush, with CPU decoding in place of
+// copying the encoded blocks back to a native compressed GPU image.
+typedef struct {
+    vkimg_t *shadow, *base; VkImageView view; tex_t tex;
+    unsigned level, layer, w, h; int active;
+} bc_render_target;
+static bc_render_target g_bc_target[8];
+VkImageView vk_bc_target(int slot, const tex_t *t, const view_t *v, vkimg_t **out) {
+    if (slot < 0 || slot >= 8 || !t || !v || !v->set_format || !t->mem) return VK_NULL_HANDLE;
+    const vkfmt_t *base = vk_fmt(t->d.format), *raw = vk_fmt(v->format);
+    if (!base || !base->dec || !raw || raw->compressed || raw->dec || !raw->is_int || raw->is_sint || raw->bpb != base->bpb || raw->bw != 1 || raw->bh != 1) return VK_NULL_HANDLE;
+    if (raw->vk != VK_FORMAT_R32G32_UINT && raw->vk != VK_FORMAT_R32G32B32A32_UINT) return VK_NULL_HANDLE;
+    // One 2D level/layer per attachment. Layered/3D rendering and linear BC
+    // storage remain explicit unsupported cases rather than reinterpreted bytes.
+    if (t->d.target != 1 && t->d.target != 4 && t->d.target != 8 && t->d.target != 9) return VK_NULL_HANDLE;
+    if (t->d.flags & (NVN_TEXTURE_FLAGS_LINEAR | NVN_TEXTURE_FLAGS_LINEAR_RENDER_TARGET)) return VK_NULL_HANDLE;
+    unsigned lv = v->set_levels ? v->base_level : 0, ly = v->set_layers ? v->min_layer : 0;
+    if (lv >= (t->d.levels ? t->d.levels : 1) || ly >= layers_of(&t->d) || (v->set_layers && v->nlayers > 1) || (layers_of(&t->d) > 1 && !v->set_layers)) return VK_NULL_HANDLE;
+    vkimg_t *im = vk_tex(t); if (!im) return VK_NULL_HANDLE;
+    if (im->gpu_w && !im->bc_guest_current) die("[vk] CPU BC target LOAD after GPU upload needs encoded guest blocks");
+    unsigned w = im->w >> lv ? im->w >> lv : 1, h = im->h >> lv ? im->h >> lv : 1;
+    unsigned bw = (w + 3) / 4, bh = (h + 3) / 4;
+    bc_render_target *b = &g_bc_target[slot];
+    if (!b->shadow || b->shadow->w != bw || b->shadow->h != bh || b->shadow->fmt != raw->vk) {
+        if (b->view) vk_defer_free_view(b->view);
+        if (b->shadow) img_drop(b->shadow);
+        tex_t rt = *t; rt.d = (nvn_texdesc){.target=1, .format=v->format, .width=bw, .height=bh, .depth=1, .levels=1};
+        b->shadow = img_new(&rt, raw); b->view = VK_NULL_HANDLE;
+        if (!b->shadow) die("[vk] BC raw-block target allocation failed");
+        g_img_n++; g_img_bytes += b->shadow->allocation_size;
+        if (!(b->shadow->usage & VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT)) die("[vk] BC raw-block integer format %d cannot be rendered", raw->vk);
+        VkImageViewCreateInfo ci = {VK_STRUCTURE_TYPE_IMAGE_VIEW_CREATE_INFO, NULL, 0, b->shadow->img, VK_IMAGE_VIEW_TYPE_2D, raw->vk, {0}, {VK_IMAGE_ASPECT_COLOR_BIT, 0, 1, 0, 1}};
+        VKCHK(vkCreateImageView(V.dev, &ci, NULL, &b->view));
+        VKLOG("BC raw-block target: NVN %#x via %#x, %ux%u blocks (CPU decode after rendering)", t->d.format, v->format, bw, bh);
+    }
+    b->base = im; b->tex = *t; b->level = lv; b->layer = ly; b->w = w; b->h = h; b->active = 1;
+    size_t row = (size_t)bw * base->bpb, size = row * bh;
+    VkBuffer buf; VkDeviceSize off; void *blocks = vk_scratch(size, 16, &buf, &off);
+    if (nvn_deswizzle(&t->d, lv, ly, t->mem, blocks, row)) die("[vk] BC raw-block target load failed");
+    VkCommandBuffer cb = vk_cmd(); vk_tex_prepare(cb, b->shadow); vk_img_barrier_all(cb);
+    VkBufferImageCopy copy = {off, 0, 0, {VK_IMAGE_ASPECT_COLOR_BIT, 0, 0, 1}, {0,0,0}, {bw,bh,1}};
+    vkCmdCopyBufferToImage(cb, buf, b->shadow->img, VK_IMAGE_LAYOUT_GENERAL, 1, &copy); vk_img_barrier_all(cb);
+    vk_view_fmt = raw->vk; vk_view_layers = 1; *out = b->shadow; return b->view;
+}
+void vk_bc_flush_targets(void) {
+    for (int i = 0; i < 8; i++) {
+        bc_render_target *b = &g_bc_target[i]; if (!b->active) continue; b->active = 0;
+        unsigned bw = b->shadow->w, bh = b->shadow->h, block = nvn_bc_block_size(b->tex.d.format);
+        size_t row = (size_t)bw * block, size = row * bh;
+        VkBuffer buf; VkDeviceSize off; vk_scratch(size, 16, &buf, &off);
+        VkCommandBuffer cb = vk_cmd(); vk_img_barrier_all(cb);
+        VkBufferImageCopy copy = {off,0,0,{VK_IMAGE_ASPECT_COLOR_BIT,0,0,1},{0,0,0},{bw,bh,1}};
+        vkCmdCopyImageToBuffer(cb, b->shadow->img, VK_IMAGE_LAYOUT_GENERAL, buf, 1, &copy);
+        uint8_t *blocks = malloc(size); if (!blocks) die("[vk] BC generated-block readback allocation failed");
+        vk_buffer_snapshot(buf, off, size, blocks); // ordered after all draws in this pass
+        nvn_dirty_release(b->tex.mem, b->tex.L.size);
+        if (nvn_swizzle(&b->tex.d, b->level, b->layer, blocks, row, (void *)b->tex.mem)) die("[vk] BC generated-block writeback failed");
+        unsigned pixel = nvn_bc_pixel_size(b->tex.d.format); size_t pitch = (size_t)b->w * pixel, decoded_size = pitch * b->h;
+        VkBuffer dst; VkDeviceSize dst_off; void *decoded = vk_scratch(decoded_size, 16, &dst, &dst_off);
+        if (nvn_bc_decode(b->tex.d.format,b->w,b->h,1,blocks,size,row,size,decoded,decoded_size,pitch,decoded_size)) die("[vk] generated BC decode failed");
+        free(blocks);
+        cb = vk_cmd(); vk_tex_prepare(cb, b->base); vk_img_barrier_all(cb);
+        VkBufferImageCopy upload = {dst_off,0,0,{VK_IMAGE_ASPECT_COLOR_BIT,b->level,b->layer,1},{0,0,0},{b->w,b->h,1}};
+        vkCmdCopyBufferToImage(cb,dst,b->base->img,VK_IMAGE_LAYOUT_GENERAL,1,&upload); vk_img_barrier_all(cb);
+        b->base->gpu_w = 1; b->base->bc_guest_current = 1;
+        if (b->base->packaged) {
+            nvn_dirty_protect(b->tex.mem,b->tex.L.size); b->base->pkg_released = 0;
+            b->base->pkg_stamp = b->base->pkg_seen = nvn_dirty_now();
+            b->base->pkg_hash = pkg_hash(b->tex.mem, b->tex.L.size);
+        }
+    }
+}
 static VkComponentSwizzle swz_comp(int nvn) {   // NVN swizzle enum: 0 zero 1 one 2 R 3 G 4 B 5 A
     switch (nvn) { case 0: return VK_COMPONENT_SWIZZLE_ZERO; case 1: return VK_COMPONENT_SWIZZLE_ONE; case 2: return VK_COMPONENT_SWIZZLE_R; case 3: return VK_COMPONENT_SWIZZLE_G; case 4: return VK_COMPONENT_SWIZZLE_B; default: return VK_COMPONENT_SWIZZLE_A; }
 }
@@ -525,7 +600,7 @@ __thread VkFormat vk_view_fmt; __thread uint32_t vk_view_layers;
 VkImageView vk_tex_view(const tex_t *t, const view_t *vw, int dim, int arrayed, int as_attachment, vkimg_t **img_out) {
     vkimg_t *im = vk_tex(t); if (img_out) *img_out = im;
     if (!im) return VK_NULL_HANDLE;
-    if (as_attachment) { im->wseq = ++g_wseq; im->gpu_w = 1; } else if (im->novl) alias_check(im);
+    if (as_attachment) { im->wseq = ++g_wseq; im->gpu_w = 1; im->bc_guest_current = 0; } else if (im->novl) alias_check(im);
     vk_watch(im, as_attachment ? "attachment" : "sampled or image");
     if (!as_attachment) { void vk_texdump_note(vkimg_t *im); vk_texdump_note(im); }
     const vkfmt_t *f = vk_fmt(vw && vw->set_format ? vw->format : t->d.format); if (!f) f = vk_fmt(t->d.format);

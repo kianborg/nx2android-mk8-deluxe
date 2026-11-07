@@ -29,7 +29,7 @@ typedef struct {desc_t d;} tex_t;
 typedef struct {int set_levels,base_level,set_layers,min_layer;} view_t;
 typedef struct {int xoffset,yoffset,zoffset,width,height,depth;} region_t;
 typedef struct {tex_t *tex;view_t view;int has_view;region_t r;uint64_t src;} p_copy_b2t;
-typedef struct {unsigned layers,levels,w,h,d,gpu_w;VkImageAspectFlags aspect;VkImage img;} vkimg_t;
+typedef struct {unsigned layers,levels,w,h,d,gpu_w,bc_guest_current;VkImageAspectFlags aspect;VkImage img;} vkimg_t;
 typedef struct {unsigned dec,bw,bh,bpb,dbpp;} vkfmt_t;
 typedef struct {uint64_t hi;} vkpool_t;
 static vkimg_t image={.layers=3,.levels=5,.w=19,.h=13,.d=8,.aspect=VK_IMAGE_ASPECT_COLOR_BIT,.img=(VkImage)7};
@@ -78,7 +78,8 @@ int main(void) {
     tex_t t={.d={0x49}};
     p_copy_b2t c={.tex=&t,.view={1,1,1,1},.has_view=1,.r={4,0,0,5,3,2},.src=0x1004};
     for(unsigned z=0;z<2;z++)for(unsigned x=0;x<2;x++)gpu[4+z*32+x*8]=20+z*30+x;
-    copy_b2t(&c,1);
+    image.bc_guest_current=1;copy_b2t(&c,1);
+    assert(!image.bc_guest_current);
     assert(snapshots==1 && uploads==1 && image.gpu_w && last.imageSubresource.mipLevel==1);
     assert(last.imageSubresource.baseArrayLayer==1 && last.imageSubresource.layerCount==2 && last.imageExtent.depth==1);
     image.layers=1;c.view=(view_t){0};c.r.xoffset=0;c.r.zoffset=2;

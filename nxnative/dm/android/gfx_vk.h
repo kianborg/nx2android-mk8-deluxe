@@ -116,6 +116,8 @@ struct vkimg {
     int fixed_fmt;   // created with a format list (DM_VK_UBWC): views only in its format or its sRGB twin
     VkFormat fmt2;   // with fixed_fmt: the other format of its list (its sRGB twin), VK_FORMAT_UNDEFINED when the list is its format alone
     VkImageView full;               // a view of the whole image as created
+    int bc_guest_current; // encoded guest blocks match the decoded GPU-written backing
+    VkDeviceSize allocation_size; // actual image bytes, including decoded BC backing
     VkBufferView tbuf;              // buffer textures: a texel buffer view of the pool
     uint64_t last_use;              // submission fence of the last use
     uint64_t pool; int64_t off, size; int flags;   // its storage (pool, offset, layout size) and NVN texture flags: images over the same memory find each other
@@ -126,6 +128,8 @@ vkimg_t *vk_tex(const tex_t *t);                                 // the image of
 void vk_lrz_forget(vkimg_t *im);                                 // an image is being dropped: the pass code forgets it (gfx_vk_exec.c)
 int vk_window_bottom_up(void);                                   // the game draws in lower-left origin mode: its window image is stored bottom-up (gfx_vk_exec.c)
 VkImageView vk_tex_view(const tex_t *t, const view_t *v, int dim, int arrayed, int as_attachment, vkimg_t **img_out);   // a view for sampling / storage / rendering
+VkImageView vk_bc_target(int slot, const tex_t *t, const view_t *v, vkimg_t **out);
+void vk_bc_flush_targets(void); // outside a render pass; uses ordered readback
 void vk_watch(const vkimg_t *im, const char *what);   // DM_VK_WATCH (gfx_vk_exec.c)
 vkimg_t *vk_tex_by_id(int tid, const view_t **view_out, const tex_t **tex_out);   // registered texture ID → image (NULL if none)
 VkSampler vk_samp_by_id(int sid);
