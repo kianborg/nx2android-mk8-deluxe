@@ -104,14 +104,16 @@ class PRBuilder(unittest.TestCase):
                         tool.main()
                     work = next(game.glob('mk8-pr-test-*'))
                     self.assertIn('DM_VK_X_BC_CPU=0', phone.env)
+                    self.assertIn('DM_VK_BC_GPU_READBACK=0', phone.env)
                     self.assertIn('DM_LANG=en-US', phone.env)
                     self.assertIn('NEW_DEFAULT=1', phone.env)
                     self.assertNotIn('DM_VK_DRIVER=turnip', phone.env)
                     self.assertEqual((work / 'env-before-install.txt').read_text().splitlines()[-1], 'DM_VK_BC_DECODE=1')
                     self.assertEqual(working.read_bytes(), b'working APK must remain')
-                    with patch.object(sys, 'argv', ['helper', '--configure-only', str(work), '--cpu-bc']):
+                    with patch.object(sys, 'argv', ['helper', '--configure-only', str(work), '--cpu-bc', '--gpu-readback']):
                         tool.main()
                     self.assertIn('DM_VK_X_BC_CPU=1', phone.env)
+                    self.assertIn('DM_VK_BC_GPU_READBACK=1', phone.env)
                     self.assertEqual(len(commands), 2)  # no rebuild/reinstall for mode switch
                     working_package = 'org.nx2a.t0100152000022000'
                     for call in phone.calls:
