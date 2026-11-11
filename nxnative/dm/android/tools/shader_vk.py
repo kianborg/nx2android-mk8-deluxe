@@ -14,8 +14,7 @@ from pathlib import Path
 HERE = Path(__file__).resolve().parent
 TOOLS = HERE.parent.parent / 'gfx/tools'
 sys.path[:0] = [str(TOOLS), str(HERE)]
-import dmsh_facts, dmsh_chain, dmsv   # noqa: E402  (DM_GAME picks the profile)
-from shader_jobs import translate
+import dmsh_facts, dmsh_chain, dmsv, shader_products   # noqa: E402  (DM_GAME picks the profile)
 from shader_split import glslc_stage   # the package reader also recognizes headerless compute code
 
 ap = argparse.ArgumentParser()
@@ -25,6 +24,7 @@ ap.add_argument('--keys', default='')
 ap.add_argument('--batch-timeout', type=float, default=float(os.environ.get('NX2A_SHADER_TIMEOUT', '600')),
                 help='maximum seconds per 16-shader batch (default: NX2A_SHADER_TIMEOUT or 600)')
 ap.add_argument('--dotnet', default=os.environ.get('DOTNET', 'dotnet'))
+ap.add_argument('--report', help='write the expected and omitted shader inventory as JSON')
 ap.add_argument('--capture', help='a folder of shaders captured at run time on the device (<key>.bin)')
 ap.add_argument('--zstd', type=int, default=dmsv.LEVEL, help=f'zstd level of the SPIR-V in the bundle (default {dmsv.LEVEL}); 0: version 1, uncompressed')
 ap.add_argument('--xlate', help="the translator (dmsh_xlate.dll) to run (default: the iOS chain's dm/gfx/tools/dmsh_xlate_bin; the porter builds one from the in-repo source)")
@@ -118,7 +118,7 @@ def job_for(key, stage, rec, w):   # dmsh_build.py job_for; transform feedback i
     elif code[:4] == bytes.fromhex('79563412'): code = code[0x100:]
     cp = os.path.join(w, key + '.bin'); open(cp, 'wb').write(code)
     xfb = xfb_layout(key, rec[ci:]) if stage in ('vs', 'gs') else None   # a geometry shader captures what it emits (Xenoblade Chronicles 3's particle update, 293ecebc0136519b)
-    j = {'key': key, 'stage': stage, 'code': cp, 'tex': {}, 'img': {}, 'attr': {}, 'fout': {}, 'c1': c1.hex(), 'debug': False, 'reduced': True, 'sb_align': SB_ALIGN, 'subgroup': SUBGROUP, 'gather_bias': GATHER_BIAS, 'gs_passthrough': False, **({'xfb': xfb} if xfb else {})}
+    j = {'key': key, 'stage': stage, 'code': cp, 'tex': {}, 'img': {}, 'attr': {}, 'fout': {}, 'c1': c1.hex(), 'debug': False, 'reduced': True, 'sb_align': SB_ALIGN, 'subgroup': SUBGROUP, 'gather_bias': GATHER_BIAS, 'gs_passthrough': False, 'draw_parameters': True, **({'xfb': xfb} if xfb else {})}
     if stage == 'cs':   # Runtime captures have no facts-table row; their control section still declares the workgroup.
         x, y, z, shared = struct.unpack_from('<4I', rec, ci + 0x748)
         j.update(local=[x, y, z], shared=(shared + 15) // 16 * 16)
@@ -210,7 +210,7 @@ def classify(stage, b, res):
     if m:
         idx = int(m.group(1)); sb = sorted(res.get('sbufs', []), key=lambda x: x['binding'])
         s = sb[idx] if idx < len(sb) else None; off = s['cb_offset'] * 4 if s and s['cb_slot'] == 0 else None; base = SSBO.get(stage)
-        e.update(kind='sbuf', rw=bool(s and s['flags'] & 2))
+        e.update(kind='sbuf', rw=bool(s and s['flags'] & 1))   # Ryujinx BufferUsageFlags.Write = 1 << 0
         if stage == 'cs' and off is not None and 0x210 <= off < 0x310 and (off - 0x210) % 16 == 0: e.update(kind='ubo_ptr', reg=(off - 0x210) // 16)
         elif s and s['cb_slot'] >= 3: e.update(kind='sbuf_ubo', reg=s['cb_slot'] - 3, off=s['cb_offset'] * 4)
         else: e['reg'] = (off - base) // 16 if off is not None and base is not None and 0 <= off - base < 0x100 and (off - base) % 16 == 0 else None
@@ -370,7 +370,7 @@ def main():
                 key, source, target, sites = line.split()
                 handle_remaps[key] = int(source, 0), int(target, 0), int(sites)
     pc, loc = {}, {}
-    for ln in open(MAP, encoding='utf-8'):
+    for ln in Path(MAP).read_text(encoding='utf-8').splitlines():
         c = ln.rstrip('\n').split('\t')
         if len(c) > 4 and c[0].endswith('.bin'): loc.setdefault(c[3], (c[0], int(c[1])))
     cap = {k: v for k, v in captured(a.capture).items() if k not in loc}
@@ -383,7 +383,7 @@ def main():
         if k in cap: stages[k], rec = cap[k]
         else:
             name, idx = loc[k]
-            if name not in packs: packs[name] = records(open(os.path.join(a.pkg, name), 'rb').read())
+            if name not in packs: packs[name] = records((Path(a.pkg) / name).read_bytes())
             stages[k], rec = name[:2], packs[name][idx]
         jobs[k], c1s[k] = job_for(k, stages[k], rec, w)
     # A geometry shader's input primitive is the draw's (Maxwell's shader header doesn't say it; Ryujinx asks the GPU state): one translation for each kind, as the Mac
@@ -394,48 +394,78 @@ def main():
         for t in (0, 1, 2, 4):
             vk_ = f'{k}_t{t}'; jobs[vk_] = {**jobs[k], 'key': vk_, 'gs_input': t}; c1s[vk_] = c1s[k]; stages[vk_] = 'gs'; gs_var[vk_] = gs_variant_key(int(k, 16), t)
     keys = keys + sorted(gs_var)
-    print(f'translating {len(keys)} shaders with {a.jobs} workers (batches of 16); diagnostics: {w}', flush=True)
-    try:
-        outputs = translate(jobs, [a.dotnet, XLATE_DLL], w, a.jobs, timeout=a.batch_timeout,
-                            report=lambda message: print(message, flush=True))
-    except (RuntimeError, ValueError, OSError) as e:
-        print(f'[RED] {e}', file=sys.stderr, flush=True)
-        return 1
+    if not keys: raise ValueError('no shaders selected for export')
+    if a.report and os.path.abspath(a.report) == os.path.abspath(a.out): raise ValueError('shader report must not overwrite the bundle')
+    batch_errors, failures, rs = {}, {}, []
+    def xl(ch):
+        result = None
+        try:
+            jp = os.path.join(w, f'job_{abs(hash(ch[0]))}.json'); Path(jp).write_text(json.dumps([jobs[k] for k in ch]), encoding='utf-8')
+            result = subprocess.run([a.dotnet, XLATE_DLL, jp, w], capture_output=True, text=True, errors='replace', timeout=a.batch_timeout)
+            shader_products.check_batch(result, len(ch))
+            return result, None
+        except Exception as e:
+            return result, str(e)
+    def translate(selected):
+        lanes = [selected[i::a.jobs] for i in range(a.jobs) if selected[i::a.jobs]]
+        chunks = [lane[i:i+16] for lane in lanes for i in range(0, len(lane), 16)]
+        with cf.ThreadPoolExecutor(min(a.jobs, len(chunks))) as ex:
+            for ch, (result, error) in zip(chunks, ex.map(xl, chunks)):
+                if result is not None: rs.append(result)
+                # A failed process may have written valid products before it stopped.
+                # Keep its diagnostic for keys with no output, and validate each product.
+                batch_errors.update(dict.fromkeys(ch, error))
+    print(f'translating {len(keys)} shaders in {min(a.jobs, len(keys))} batches ...', flush=True)
+    translate(keys)
     # second pass (as the Mac chain's dmsh_build.py finish): vertex shaders with inputs used only as integers, translated again with those inputs reported as uint (int_inputs)
     again = []
     for k in keys:
-        p = os.path.join(w, k + '.spv')
-        if stages[k] != 'vs' or not os.path.exists(p): continue
-        extra = {l: t for l, t in int_inputs(open(p, 'rb').read()).items() if l not in jobs[k]['attr']}
-        if extra: jobs[k]['attr'].update(extra); again.append(k)
+        if stages[k] != 'vs' or k in failures: continue
+        try:
+            product = shader_products.output(w, k, STAGES[stages[k]])
+            if product is None: continue
+            extra = {l: t for l, t in int_inputs(product[0]).items() if l not in jobs[k]['attr']}
+            if extra:
+                jobs[k]['attr'].update(extra)
+                # A failed retry must not retain the first pass's incompatible input interface.
+                for suffix in ('.spv', '.res.json'): os.unlink(os.path.join(w, k + suffix))
+                again.append(k)
+        except Exception as e: failures[k] = str(e)
     if again:
         print(f'translating {len(again)} vertex shaders again with their integer inputs ...', flush=True)
-        try:
-            outputs += translate({k: jobs[k] for k in again}, [a.dotnet, XLATE_DLL], w, a.jobs,
-                                 timeout=a.batch_timeout, report=lambda message: print(message, flush=True))
-        except (RuntimeError, ValueError, OSError) as e:
-            print(f'[RED] {e}', file=sys.stderr, flush=True)
-            return 1
+        translate(again)
     errs = collections.Counter()
-    for output in outputs:
-        for ln in output.splitlines():
-            if ln.strip() and not ln.startswith('translated:'): errs[ln.strip()[:120]] += 1
-    entries, fails = [], collections.Counter()
+    for r in rs:
+        for ln in r.stderr.splitlines():
+            if ln.strip(): errs[ln.strip()[:120]] += 1
+    entries, fails, failed = [], collections.Counter(), []
+    expected = [[f'{gs_var[k] if k in gs_var else int(k, 16):016x}', STAGES[stages[k]]] for k in keys]
+    if len({k for k, _ in expected}) != len(expected): raise ValueError('shader keys collide with geometry variants')
     for k in keys:
-        spv_p, res_p = os.path.join(w, k + '.spv'), os.path.join(w, k + '.res.json')
-        if not os.path.exists(spv_p): fails['no output'] += 1; continue
-        spv = open(spv_p, 'rb').read(); res = json.load(open(res_p)) if os.path.exists(res_p) else {}
-        binds, local, io = spirv_bindings(spv)
-        if k in handle_remaps:
-            spv = remap_handles(spv, *handle_remaps[k])
-        st = stages[k]
-        cl = [classify(st, b, res) for b in binds]
-        for e in cl: kinds_all[e['kind']] += 1
-        # header words 2-4: a compute shader's local size; a vertex shader's input locations (all, signed int, unsigned int); a pixel shader's output locations
-        hdr3 = (local or jobs[k].get('local') or [1, 1, 1]) if st == 'cs' else io[1] if st == 'vs' else io[3] if st == 'ps' else [0, 0, 0]
-        entries.append((gs_var[k] if k in gs_var else int(k, 16), STAGES.get(st, 0), spv, refl_bin(cl, c1s[k], hdr3)))
+        try:
+            if k in failures: raise ValueError(failures[k])
+            product = shader_products.output(w, k, STAGES[stages[k]])
+            if product is None: raise ValueError(batch_errors.get(k) or 'no output')
+            spv, res = product
+            binds, local, io = spirv_bindings(spv)
+            shader_products.validate_bindings(binds, res)
+            if k in handle_remaps:
+                spv = remap_handles(spv, *handle_remaps[k])
+            st = stages[k]
+            cl = [classify(st, b, res) for b in binds]
+            for e in cl: kinds_all[e['kind']] += 1
+            # header words 2-4: a compute shader's local size; a vertex shader's input locations (all, signed int, unsigned int); a pixel shader's output locations
+            hdr3 = (local or jobs[k].get('local') or [1, 1, 1]) if st == 'cs' else io[1] if st == 'vs' else io[3] if st == 'ps' else [0, 0, 0]
+            entries.append((gs_var[k] if k in gs_var else int(k, 16), STAGES.get(st, 0), spv, refl_bin(cl, c1s[k], hdr3)))
+        except Exception as e:
+            reason = str(e)
+            failed.append([f'{gs_var[k] if k in gs_var else int(k, 16):016x}', reason])
+            fails[reason] += 1
+            print(f'[RED] {failed[-1][0]}: {reason}', flush=True)
     if a.zstd: print(f'compressing {len(entries)} shaders (zstd level {a.zstd}, {a.jobs} threads) ...', flush=True)
     ver, raw, stored = dmsv.write(a.out, entries, level=a.zstd, jobs=a.jobs)
+    if a.report:
+        with open(a.report, 'w', encoding='utf-8') as f: json.dump(dict(schema=1, expected=expected, failed=failed), f)
     print(f'{len(entries)} of {len(keys)} shaders → {a.out} ({os.path.getsize(a.out) / 2**20:.1f} MB, version {ver}: SPIR-V {raw / 2**20:.1f} MB'
           f'{f", {stored / 2**20:.1f} MB compressed" if ver > 1 else ""}); failed: {dict(fails)}; binding kinds: {dict(kinds_all)}')
     for e, n in errs.most_common(8): print(f'  translator: {n:5d}  {e}')

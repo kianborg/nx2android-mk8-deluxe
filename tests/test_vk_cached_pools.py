@@ -6,6 +6,8 @@ import tempfile
 import unittest
 
 from porter.toolchain import find_ndk
+import sys; sys.path.insert(0, str(Path(__file__).resolve().parent))
+import host_cc   # noqa: E402
 
 
 class CachedPools(unittest.TestCase):
@@ -114,7 +116,7 @@ COMPLETION
                     run = subprocess.run([str(exe), timeline, result], capture_output=True, text=True, timeout=15)
                     self.assertEqual(run.returncode, 0 if result=='0' else 91, run.stderr)
 
-    @unittest.skipUnless(shutil.which('cc'), 'a host C compiler is required')
+    @unittest.skipUnless(host_cc.posix(), 'a POSIX host C compiler is required (<sys/mman.h>, pthread, setenv)')
     def test_allocation_and_fallback(self):
         ndk, _ = find_ndk()
         headers = next(ndk.glob('toolchains/llvm/prebuilt/*/sysroot/usr/include'), None) if ndk else None

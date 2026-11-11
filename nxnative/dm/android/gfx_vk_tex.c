@@ -131,13 +131,30 @@ static VkFormat srgb_twin(VkFormat f) {
     default: return VK_FORMAT_UNDEFINED;
     }
 }
+// the uint (sint) format of a texel size, for a storage view that reads or writes the raw bits of a float or unorm texture (gfx_vk_exec.c tex_desc_for). VK_FORMAT_UNDEFINED
+// when the size has none, or the device cannot store into that format
+VkFormat vk_int_fmt(uint32_t bytes, int sint) {
+    VkFormat f;
+    switch (bytes) {
+    case 1: f = sint ? VK_FORMAT_R8_SINT : VK_FORMAT_R8_UINT; break;
+    case 2: f = sint ? VK_FORMAT_R16_SINT : VK_FORMAT_R16_UINT; break;
+    case 4: f = sint ? VK_FORMAT_R32_SINT : VK_FORMAT_R32_UINT; break;
+    case 8: f = sint ? VK_FORMAT_R32G32_SINT : VK_FORMAT_R32G32_UINT; break;
+    case 16: f = sint ? VK_FORMAT_R32G32B32A32_SINT : VK_FORMAT_R32G32B32A32_UINT; break;
+    default: return VK_FORMAT_UNDEFINED;
+    }
+    VkFormatProperties fp; vkGetPhysicalDeviceFormatProperties(V.pd, f, &fp);
+    return fp.optimalTilingFeatures & VK_FORMAT_FEATURE_STORAGE_IMAGE_BIT ? f : VK_FORMAT_UNDEFINED;
+}
 // DM_VK_UBWC (start-up, bits): 1, uncompressed colour images get a format list (their format and its sRGB twin) instead of a free MUTABLE_FORMAT, which Adreno
 // needs to keep UBWC framebuffer compression; views in another format then use the image's own (vk_tex_view). 2, depth / stencil images are made without
 // MUTABLE_FORMAT and EXTENDED_USAGE (their views always take the image's own format). Unicorn Overlord on an Adreno 730: 1 cut GPU time by 35-40%. Both are the
 // default (3): Super Mario Bros. Wonder's world map on the Adreno 830 took 8.7-8.9 ms of GPU a frame instead of 11.8, the same picture (1 alone: 9.5-10.0 ms).
 // Xenoblade Chronicles 3's field took 22.9-23.0 ms against 23.0-23.6 (its own shading dominates), with clouds in every frame of a sky turn and no idle flicker;
 // Graveyard Keeper 2, Advance Wars and DKCR drew the same pictures. A colour view in another format than the image's and its twin is logged [RED] (vk_tex_view):
-// such a game wants DM_VK_UBWC=2 in its profile
+// such a game wants DM_VK_UBWC=2 in its profile. 4 (off by default): with 1, colour images flagged as images also list the uint and the sint format of their texel
+// size, for storage views that read or write their raw bits (tex_desc_for). A cross-class list may make Adreno / Turnip drop UBWC on those images, which was not
+// measured, so only a profile that needs it turns it on (DM_VK_UBWC=7); without it such a view falls back to the image's own format (vk_tex_view_as)
 static int ubwc_mode(void) { static int v = -1; if (v < 0) { const char *e = getenv("DM_VK_UBWC"); v = e ? atoi(e) : 3; } return v; }
 static vkimg_t *img_new(const tex_t *t, const vkfmt_t *f) {
     vkimg_t *im = calloc(1, sizeof *im);
@@ -156,16 +173,24 @@ static vkimg_t *img_new(const tex_t *t, const vkfmt_t *f) {
     if (f->compressed && !f->bc_decode && (f->bpb == 16 || f->bpb == 8)) { VkFormatProperties up; vkGetPhysicalDeviceFormatProperties(V.pd, f->bpb == 16 ? VK_FORMAT_R32G32B32A32_UINT : VK_FORMAT_R32G32_UINT, &up);
         if (up.optimalTilingFeatures & VK_FORMAT_FEATURE_COLOR_ATTACHMENT_BIT) u |= VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT; }
     VkImageCreateInfo ci = {VK_STRUCTURE_TYPE_IMAGE_CREATE_INFO, NULL,
-        // a square 2D array of 6n layers too: shaders read one as a cube (Pokémon Legends: Arceus's reflection probes; the view was refused by the validation layer without the flag)
-        VK_IMAGE_CREATE_MUTABLE_FORMAT_BIT | VK_IMAGE_CREATE_EXTENDED_USAGE_BIT | (d->target == 8 || d->target == 9 || (d->target == 4 && im->layers >= 6 && im->layers % 6 == 0 && im->w == im->h && im->samples <= 1) ? VK_IMAGE_CREATE_CUBE_COMPATIBLE_BIT : 0) |
+        // a square single-sample 2D array with at least six layers too: shaders read one as a cube (Pokémon Legends: Arceus's reflection probes; the view was refused by the validation layer without the flag)
+        VK_IMAGE_CREATE_MUTABLE_FORMAT_BIT | VK_IMAGE_CREATE_EXTENDED_USAGE_BIT | (d->target == 8 || d->target == 9 || (d->target == 4 && im->layers >= 6 && im->w == im->h && im->samples <= 1) ? VK_IMAGE_CREATE_CUBE_COMPATIBLE_BIT : 0) |
         (d->target == 2 ? VK_IMAGE_CREATE_2D_ARRAY_COMPATIBLE_BIT : 0) | (f->compressed ? VK_IMAGE_CREATE_BLOCK_TEXEL_VIEW_COMPATIBLE_BIT : 0),
         d->target == 2 ? VK_IMAGE_TYPE_3D : d->target == 0 || d->target == 3 ? VK_IMAGE_TYPE_1D : VK_IMAGE_TYPE_2D, f->vk,
         {im->w, im->h, im->d}, im->levels, im->layers, (VkSampleCountFlagBits)im->samples, VK_IMAGE_TILING_OPTIMAL, u, VK_SHARING_MODE_EXCLUSIVE, 0, NULL, VK_IMAGE_LAYOUT_UNDEFINED};
     if (im->samples > 1) ci.flags &= ~(VkImageCreateFlags)VK_IMAGE_CREATE_2D_ARRAY_COMPATIBLE_BIT;
-    VkFormat fl[2] = {f->vk, srgb_twin(f->vk)}; VkImageFormatListCreateInfo fli = {VK_STRUCTURE_TYPE_IMAGE_FORMAT_LIST_CREATE_INFO, NULL, fl[1] ? 2u : 1u, fl};
+    VkFormat fl[4] = {f->vk, srgb_twin(f->vk), 0, 0}; uint32_t nfl = fl[1] ? 2 : 1;
+    VkImageFormatListCreateInfo fli = {VK_STRUCTURE_TYPE_IMAGE_FORMAT_LIST_CREATE_INFO, NULL, nfl, fl};
     if (!f->compressed && (ubwc_mode() & (im->aspect == VK_IMAGE_ASPECT_COLOR_BIT ? 1 : 2))) {   // (a depth format has no twin: a list of itself, no MUTABLE_FORMAT)
         im->fixed_fmt = 1; im->fmt2 = fl[1]; ci.pNext = &fli;
-        ci.flags &= ~(VkImageCreateFlags)VK_IMAGE_CREATE_EXTENDED_USAGE_BIT; if (!fl[1]) ci.flags &= ~(VkImageCreateFlags)VK_IMAGE_CREATE_MUTABLE_FORMAT_BIT;
+        // a colour image flagged as an image may be stored into as integers (a shader declares r32ui over an RGBA8 texture, FINAL FANTASY TACTICS' UI composite:
+        // tex_desc_for): with DM_VK_UBWC bit 4, its list takes the uint and the sint format of its texel size, which a storage view in them then may use
+        if ((ubwc_mode() & 4) && (d->flags & NVN_TEXTURE_FLAGS_IMAGE) && im->aspect == VK_IMAGE_ASPECT_COLOR_BIT) {   // (DM_VK_UBWC bit 4)
+            im->fmt_cls[0] = vk_int_fmt(f->bpb, 0); im->fmt_cls[1] = vk_int_fmt(f->bpb, 1);
+            if (im->fmt_cls[0]) fl[nfl++] = im->fmt_cls[0];
+            if (im->fmt_cls[1]) fl[nfl++] = im->fmt_cls[1];
+            fli.viewFormatCount = nfl; }
+        ci.flags &= ~(VkImageCreateFlags)VK_IMAGE_CREATE_EXTENDED_USAGE_BIT; if (nfl == 1) ci.flags &= ~(VkImageCreateFlags)VK_IMAGE_CREATE_MUTABLE_FORMAT_BIT;
     }
     if (f->bc_decode) ci.usage &= ~(VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT | VK_IMAGE_USAGE_STORAGE_BIT);
     im->usage = ci.usage; im->cflags = ci.flags;
@@ -202,7 +227,13 @@ void vk_tex_prepare(VkCommandBuffer cb, vkimg_t *im) {
     VkMemoryBarrier mb = {VK_STRUCTURE_TYPE_MEMORY_BARRIER, NULL, VK_ACCESS_TRANSFER_WRITE_BIT, VK_ACCESS_MEMORY_READ_BIT | VK_ACCESS_MEMORY_WRITE_BIT};
     vkCmdPipelineBarrier(cb, VK_PIPELINE_STAGE_TRANSFER_BIT, VK_PIPELINE_STAGE_ALL_COMMANDS_BIT, 0, 1, &mb, 0, NULL, 0, NULL);
 }
-// Upload a packaged texture from guest memory: each level and layer deswizzled into scratch memory, copied in by the upload command buffer
+// Upload a packaged texture from guest memory: each level and layer deswizzled into scratch memory, copied in by the upload command buffer.
+// A texture of a sparse virtual pool (hle_nvn.c: OCTOPATH TRAVELER streams each texture into a virtual pool of its own and maps its tiles from physical pools) has no memory at its
+// address on Android: private memory cannot be aliased on Linux (darwin_compat.c vm_remap), so its bytes are read through the pool's page table (nvn_sparse_copy, unmapped pages as 0)
+// and uploaded again when a mapping in its range changes or the CPU writes a physical page behind it (nvn_sparse_since), as the Mac's replay does
+int nvn_sparse_pool(const void *pool); uint64_t nvn_sparse_gen(void); uint64_t nvn_sparse_copy(const void *pool, void *dst, uint64_t a, uint64_t n);
+int nvn_sparse_since(const void *pool, uint64_t a, uint64_t n, uint64_t gen, uint64_t stamp); void nvn_sparse_protect(const void *pool, uint64_t a, uint64_t n);
+static int sparse_tex(const tex_t *t) { return t->pool && nvn_sparse_pool(t->pool); }
 uint64_t g_pkg_n, g_pkg_bytes, g_pkg_ns;   // packaged texture uploads: count, bytes, CPU time (the replay's per-frame line)
 static void pkg_upload_(vkimg_t *im, const tex_t *t, const vkfmt_t *f);
 static uint64_t pkg_hash(const uint8_t *m, size_t n) {   // FNV-1a over 8-byte words
@@ -224,12 +255,23 @@ static void pkg_upload_(vkimg_t *im, const tex_t *t, const vkfmt_t *f) {
     if (im->packaged < 100) im->packaged++;
     VkCommandBuffer cb = vk_upload_cmd();
     if (im->layout != VK_IMAGE_LAYOUT_GENERAL) vk_tex_prepare(cb, im);
-    nvn_dirty_protect(t->mem, t->L.size);
-    im->pkg_stamp = nvn_dirty_now(); im->pkg_span = nvn_dirty_span(t->mem, t->L.size); im->pkg_seen = im->pkg_stamp;
-    im->pkg_mem = t->mem; im->pkg_len = t->L.size; im->pkg_released = 0; im->pkg_hash = pkg_hash(t->mem, t->L.size);
+    const uint8_t *mem = t->mem; uint8_t *copy = NULL;
+    if ((im->pkg_sparse = sparse_tex(t))) {   // through the page table (see above); its physical pages stay protected, so no sweep releases them (pkg_mem NULL)
+        im->pkg_vgen = nvn_sparse_gen(); nvn_sparse_protect(t->pool, (uint64_t)(uintptr_t)t->mem, t->L.size); im->pkg_stamp = nvn_dirty_now(); im->pkg_seen = im->pkg_stamp;
+        im->pkg_span = NULL; im->pkg_mem = NULL; im->pkg_len = 0; im->pkg_released = 0;
+        if (!(copy = malloc(t->L.size))) return;
+        uint64_t miss = nvn_sparse_copy(t->pool, copy, (uint64_t)(uintptr_t)t->mem, t->L.size); mem = copy;
+        { static int n; const char *e = getenv("DM_VK_LOG_SPARSE"); if (e && atoi(e) && n < 400) { n++;   // which sparse textures are read, and how much of them was not mapped yet
+            VKLOG("sparse upload: serial %llu %ux%ux%u format %#x levels %u flags %#x size %#llx mem %p pool %p tileH %u: %#llx bytes not mapped%s", (unsigned long long)t->serial, t->d.width, t->d.height,
+                  t->d.depth, t->d.format, im->levels, t->d.flags, (unsigned long long)t->L.size, (const void *)t->mem, t->pool, t->L.tileH, (unsigned long long)miss, im->packaged > 1 ? " (again)" : ""); } }
+    } else {
+        nvn_dirty_protect(t->mem, t->L.size);
+        im->pkg_stamp = nvn_dirty_now(); im->pkg_span = nvn_dirty_span(t->mem, t->L.size); im->pkg_seen = im->pkg_stamp;
+        im->pkg_mem = t->mem; im->pkg_len = t->L.size; im->pkg_released = 0; im->pkg_hash = pkg_hash(t->mem, t->L.size);
+    }
     int linear = (t->d.flags & (NVN_TEXTURE_FLAGS_LINEAR | NVN_TEXTURE_FLAGS_LINEAR_RENDER_TARGET)) != 0;
     unsigned bw = f->bw ? f->bw : 1, bh = f->bh ? f->bh : 1, bpb = f->bpb;
-    if (!bpb) { VKRED_ONCE(12, "packaged texture format %#x has no block size", t->d.format); return; }
+    if (!bpb) { free(copy); VKRED_ONCE(12, "packaged texture format %#x has no block size", t->d.format); return; }
     for (unsigned lv = 0; lv < im->levels; lv++) {
         uint32_t w = im->w >> lv ? im->w >> lv : 1, h = im->h >> lv ? im->h >> lv : 1, z = im->d >> lv ? im->d >> lv : 1;
         uint32_t bx = (w + bw - 1) / bw, by = (h + bh - 1) / bh; size_t pitch = (size_t)bx * bpb, slab = pitch * by * z;
@@ -245,10 +287,10 @@ static void pkg_upload_(vkimg_t *im, const tex_t *t, const vkfmt_t *f) {
                 if (f->bc_decode && (im->levels != 1 || im->layers != 1 || stride < pitch ||
                     stride > SIZE_MAX / (by * z) || t->L.size < stride * (by * z - 1) + pitch))
                     die("[vk] invalid linear BC storage layout");
-                for (uint32_t y = 0; y < by * z; y++) memcpy(blocks + y * pitch, t->mem + (size_t)y * stride, pitch);
-            } else if (nvn_deswizzle(&t->d, lv, ly, t->mem, blocks, pitch)) {
+                for (uint32_t y = 0; y < by * z; y++) memcpy(blocks + y * pitch, mem + (size_t)y * stride, pitch);
+            } else if (nvn_deswizzle(&t->d, lv, ly, mem, blocks, pitch)) {
                 if (f->bc_decode) free(blocks);
-                VKRED_ONCE(13, "deswizzle refused texture format %#x target %d", t->d.format, t->d.target); return;
+                free(copy); VKRED_ONCE(13, "deswizzle refused texture format %#x target %d", t->d.format, t->d.target); return;
             }
             if (f->bc_decode) {
                 int r = nvn_bc_decode(t->d.format, w, h, z, blocks, slab, pitch, pitch * by,
@@ -260,6 +302,7 @@ static void pkg_upload_(vkimg_t *im, const tex_t *t, const vkfmt_t *f) {
             vkCmdCopyBufferToImage(cb, sb, im->img, VK_IMAGE_LAYOUT_GENERAL, 1, &r);
         }
     }
+    free(copy);
 }
 static int packaged_tex(const tex_t *t);
 static int cpu_content_tex(const tex_t *t, const vkfmt_t *f);
@@ -339,11 +382,12 @@ static vkimg_t *vk_tex_(const tex_t *t) {
         if (!im->packaged) { im->packaged = 1; pkg_upload(im, t, f); }
         else {
             uint64_t now = nvn_dirty_now();
-            if (now != im->pkg_seen && nvn_dirty_since_span(im->pkg_span, t->mem, t->L.size, im->pkg_stamp)) {   // pages written since the upload
+            if (im->pkg_sparse) { if (nvn_sparse_since(t->pool, (uint64_t)(uintptr_t)t->mem, t->L.size, im->pkg_vgen, im->pkg_stamp)) pkg_upload(im, t, f); }   // mapped or written since
+            else if (now != im->pkg_seen && nvn_dirty_since_span(im->pkg_span, t->mem, t->L.size, im->pkg_stamp)) {   // pages written since the upload
                 // The GPU wrote the image since (a compute shader's image stores, a copy, a render) and its storage still holds the bytes of the upload: the writes were around
                 // it on shared pages, and an upload would put the CPU's bytes over the GPU's. Monster Hunter Rise's spot light profiles (512x1x64 R16F, written by a compute
                 // shader into memory the game had zeroed) were uploaded again as zeros at presents 60 and 1079: every spot light's profile read 0 and the faces lit only by
-                // those lights (the character maker, cutscenes) came out black
+                // those lights (the character maker, cutscenes) came out black. A sparse texture has no memory at t->mem to hash (it takes the branch above)
                 if (im->gpu_w && pkg_hash(t->mem, t->L.size) == im->pkg_hash) { nvn_dirty_protect(t->mem, t->L.size); im->pkg_stamp = nvn_dirty_now(); im->pkg_released = 0;
                     static int nl; if (nl++ < 16) VKLOG("texture %ux%u nvn format %#x at %p: its pages were written, its bytes are as uploaded and the GPU wrote it: kept", t->d.width, t->d.height, t->d.format, (const void *)t->mem); }
                 else pkg_upload(im, t, f);
@@ -395,14 +439,18 @@ void vk_tex_sweep(void) {
     if ((idle || lru) && (g_tex_frame % 3000 == 0 || lru)) VKLOG("packaged textures: %llu not drawn for %d presents and %llu least recently drawn released their write protection (%llu pages; %llu so far); %d protected runs",
                     (unsigned long long)idle, PKG_IDLE, (unsigned long long)lru, (unsigned long long)(nvn_dirty_released() - before), (unsigned long long)total, runs);
 }
+// The keys are gathered first, 64 a pass, then deleted (a delete rehashes the table): a rescan from the start after each delete went over the whole table once per image,
+// under the lock the replay's texture lookups take, for each of the pools Pokémon Scarlet drops while a capture loads
 void vk_tex_drop_pool(const void *pool) {   // the pool is finalized: its textures' images go once the GPU is done with them
     pthread_mutex_lock(&g_img_mu);
-    for (uint32_t i = 0; i < g_by_key.cap; i++) {
-        if (!g_by_key.vals[i]) continue;
-        akey k; memcpy(&k, g_by_key.keys + (size_t)i * g_by_key.klen, sizeof k);
-        if (k.pool != (uint64_t)(uintptr_t)pool) continue;
-        vkimg_t *im = g_by_key.vals[i]; nvn_hm_del(&g_by_key, &k); i = (uint32_t)-1;   // the table was rehashed by the delete: rescan
-        img_drop(im);
+    for (int n = 64; n == 64;) {
+        akey ks[64]; n = 0;
+        for (uint32_t i = 0; i < g_by_key.cap && n < 64; i++) {
+            if (!g_by_key.vals[i]) continue;
+            memcpy(&ks[n], g_by_key.keys + (size_t)i * g_by_key.klen, sizeof ks[n]);
+            if (ks[n].pool == (uint64_t)(uintptr_t)pool) n++;
+        }
+        for (int j = 0; j < n; j++) { vkimg_t *im = nvn_hm_get(&g_by_key, &ks[j]); if (!im) continue; nvn_hm_del(&g_by_key, &ks[j]); img_drop(im); }
     }
     pthread_mutex_unlock(&g_img_mu);
 }
@@ -461,12 +509,35 @@ static int cpu_content_tex(const tex_t *t, const vkfmt_t *f) {
     return 1;
 }
 static int packaged_tex(const tex_t *t) {
-    if (t->has_layout || linear_tex(t)) return 1;
+    if (t->has_layout || linear_tex(t) || sparse_tex(t)) return 1;
     pthread_mutex_lock(&g_cw_mu); int r = nvn_hm_get(&g_cpu_written, &t->serial) != NULL; pthread_mutex_unlock(&g_cw_mu);
     return r;
 }
 void mtl_tex_init(const tex_t *t) { (void)t; }
-void mtl_tex_release(tex_t *t) { (void)t; }   // images belong to their storage key, dropped with the pool
+// A released serial's mark goes once no queued job can still bind it: under asynchronous replay (nvn_jobs_queued, hle_nvn.c) a texture Finalized between submit and replay is still
+// drawn by that submission, whose first use of it decides its content, and a mark deleted at once would have made it a GPU-only image of zeros there. The deletion waits for the
+// replay of the first job queued after the release (vk_tex_release_drain, from vk_exec_reset); without a replay thread it is at once
+uint64_t nvn_jobs_queued(void); uint64_t nvn_replaying_job(void);
+typedef struct { uint64_t serial, seq; } cwrel_t;
+static cwrel_t *g_cwrel; static int g_ncwrel, g_capcwrel;   // under g_cw_mu
+void mtl_tex_release(tex_t *t) {   // images belong to their storage key, dropped with the pool; the serial's CPU-written mark goes (serials are never reused: kept, the table grew by one entry per CPU-written texture made)
+    if (!t->serial) return;
+    uint64_t seq = nvn_jobs_queued();
+    pthread_mutex_lock(&g_cw_mu);
+    if (!seq) nvn_hm_del(&g_cpu_written, &t->serial);
+    else if (nvn_hm_get(&g_cpu_written, &t->serial)) {
+        if (g_ncwrel == g_capcwrel) { g_capcwrel = g_capcwrel ? 2 * g_capcwrel : 256; g_cwrel = realloc(g_cwrel, sizeof *g_cwrel * (size_t)g_capcwrel); if (!g_cwrel) die("[vk] texture release list allocation failed"); }
+        g_cwrel[g_ncwrel++] = (cwrel_t){t->serial, seq};
+    }
+    pthread_mutex_unlock(&g_cw_mu);
+}
+void vk_tex_release_drain(void) {   // the replay thread, at each submission (vk_exec_reset): the releases made before the job being replayed was queued
+    uint64_t job = nvn_replaying_job(); if (!job) return;
+    pthread_mutex_lock(&g_cw_mu);
+    int o = 0; for (int i = 0; i < g_ncwrel; i++) { if (g_cwrel[i].seq < job) nvn_hm_del(&g_cpu_written, &g_cwrel[i].serial); else g_cwrel[o++] = g_cwrel[i]; }
+    g_ncwrel = o;
+    pthread_mutex_unlock(&g_cw_mu);
+}
 int mtl_tex_gpu_owned(uint64_t serial) { (void)serial; return 0; }
 
 // ---------------- views ----------------
@@ -589,6 +660,9 @@ void vk_tex_swizzle_describe(const tex_t *t, const view_t *v, char *out, size_t 
 }
 __thread VkFormat vk_view_fmt; __thread uint32_t vk_view_layers;
 VkImageView vk_tex_view(const tex_t *t, const view_t *vw, int dim, int arrayed, int as_attachment, vkimg_t **img_out) {
+    return vk_tex_view_as(t, vw, dim, arrayed, as_attachment, img_out, 0);
+}
+VkImageView vk_tex_view_as(const tex_t *t, const view_t *vw, int dim, int arrayed, int as_attachment, vkimg_t **img_out, VkFormat vfmt) {
     vkimg_t *im = vk_tex(t); if (img_out) *img_out = im;
     if (!im) return VK_NULL_HANDLE;
     if (as_attachment) { im->wseq = ++g_wseq; im->gpu_w = 1; } else if (im->novl) alias_check(im);
@@ -618,10 +692,18 @@ VkImageView vk_tex_view(const tex_t *t, const view_t *vw, int dim, int arrayed, 
         VkImageViewType want = dim == 0 ? (arrayed ? VK_IMAGE_VIEW_TYPE_1D_ARRAY : VK_IMAGE_VIEW_TYPE_1D) : dim == 1 ? (arrayed ? VK_IMAGE_VIEW_TYPE_2D_ARRAY : VK_IMAGE_VIEW_TYPE_2D) :
                                dim == 2 ? VK_IMAGE_VIEW_TYPE_3D : dim == 3 ? (arrayed ? VK_IMAGE_VIEW_TYPE_CUBE_ARRAY : VK_IMAGE_VIEW_TYPE_CUBE) : type;
         if (want == VK_IMAGE_VIEW_TYPE_2D && type == VK_IMAGE_VIEW_TYPE_2D_ARRAY) nly = 1;
-        if ((want == VK_IMAGE_VIEW_TYPE_CUBE || want == VK_IMAGE_VIEW_TYPE_CUBE_ARRAY) && (im->layers < 6 || nly % 6)) want = type;   // not a cube: keep it as it is
-        if (want == VK_IMAGE_VIEW_TYPE_CUBE) nly = 6;
-        if (want == VK_IMAGE_VIEW_TYPE_3D && im->d == 1) want = type;
-        if ((want == VK_IMAGE_VIEW_TYPE_1D || want == VK_IMAGE_VIEW_TYPE_1D_ARRAY) != (type == VK_IMAGE_VIEW_TYPE_1D || type == VK_IMAGE_VIEW_TYPE_1D_ARRAY)) want = type;
+        if (want == VK_IMAGE_VIEW_TYPE_CUBE || want == VK_IMAGE_VIEW_TYPE_CUBE_ARRAY) {
+            // Returning a 2D view for a cube shader bypassed tex_desc_for's typed dummy. The saved creation flag also requires a square,
+            // single-sample 2D image; having six layers alone is insufficient. Check the selected range before either view cache can keep a wrong type.
+            if (!(im->cflags & VK_IMAGE_CREATE_CUBE_COMPATIBLE_BIT) || nly < 6 || (want == VK_IMAGE_VIEW_TYPE_CUBE_ARRAY && nly % 6)) {
+                VKRED_ONCE(106, "cube view refused: image %ux%ux%u layers %u cflags %#x, levels %u+%u range %u+%u type %d", im->w, im->h, im->d, im->layers, im->cflags, lv0, nlv, ly0, nly, want);
+                return VK_NULL_HANDLE;
+            }
+            if (want == VK_IMAGE_VIEW_TYPE_CUBE) nly = 6;
+        } else {
+            if (want == VK_IMAGE_VIEW_TYPE_3D && im->d == 1) want = type;
+            if ((want == VK_IMAGE_VIEW_TYPE_1D || want == VK_IMAGE_VIEW_TYPE_1D_ARRAY) != (type == VK_IMAGE_VIEW_TYPE_1D || type == VK_IMAGE_VIEW_TYPE_1D_ARRAY)) want = type;
+        }
         type = want;
     }
     if (as_attachment) { type = im->layers > 1 && nly > 1 ? VK_IMAGE_VIEW_TYPE_2D_ARRAY : (im->vtype == VK_IMAGE_VIEW_TYPE_3D ? VK_IMAGE_VIEW_TYPE_2D_ARRAY : VK_IMAGE_VIEW_TYPE_2D); nlv = 1; }
@@ -632,8 +714,11 @@ VkImageView vk_tex_view(const tex_t *t, const view_t *vw, int dim, int arrayed, 
     VkComponentMapping swz = sample_swizzle(&f->swz,t,vw,as_attachment);
     VkFormat fmt = f->vk;
     const vkfmt_t *imf = vk_fmt(im->nvn_format);   // (a BC format decoded on the CPU counts as compressed: its view keeps the decoded image's format)
-    if ((im->aspect & ~VK_IMAGE_ASPECT_COLOR_BIT) || (f->compressed || f->bc_decode) != (imf->compressed || imf->bc_decode)) fmt = im->fmt;   // depth views and block-size changes keep the image's format
-    if (im->fixed_fmt && fmt != im->fmt && fmt != srgb_twin(im->fmt)) { fmt = im->fmt; static int n; if (n++ < 8) VKLOG("[RED] view format %d of a format-listed image (%d, DM_VK_UBWC): the image's own used", f->vk, im->fmt); }
+    if ((im->aspect & ~VK_IMAGE_ASPECT_COLOR_BIT) || (f->compressed || f->bc_decode) != (imf->compressed || imf->bc_decode) || (f->bc_decode && nvn_bc_pixel_size(t->d.format) != nvn_bc_pixel_size(im->nvn_format))) fmt = im->fmt;   // depth views and block-size changes keep the image's format
+    // a storage view in the integer class of the shader's declaration (vfmt, the caller's texel size): identity swizzle, as an image takes no channel mapping. Only where the
+    // image allows it: its format list (fixed_fmt) names it, else the image is MUTABLE_FORMAT
+    if (vfmt && !as_attachment && im->aspect == VK_IMAGE_ASPECT_COLOR_BIT && (!im->fixed_fmt || vfmt == im->fmt_cls[0] || vfmt == im->fmt_cls[1])) { fmt = vfmt; swz = (VkComponentMapping){0}; }
+    if (im->fixed_fmt && fmt != im->fmt && fmt != srgb_twin(im->fmt) && fmt != im->fmt_cls[0] && fmt != im->fmt_cls[1]) { fmt = im->fmt; static int n; if (n++ < 8) VKLOG("[RED] view format %d of a format-listed image (%d, DM_VK_UBWC): the image's own used", f->vk, im->fmt); }
     pthread_mutex_lock(&g_view_mu);
     vview *head = nvn_hm_get(&g_views, &im);
     for (vview *v = head; v; v = v->next)
@@ -850,33 +935,51 @@ VkBufferView vk_dummy_tbuf(int storage) {
 // this submission's scratch memory, made at each bind and freed with the submission. Final Fantasy Resonance (Unreal Engine 5.6) binds its sprite particles'
 // parameters (R32F, 44 elements: colours, sizes) at offsets 36 bytes past a multiple of Adreno's 64, and they read the zero dummy (its battle fires stay missing with
 // the copy: another cause). A buffer the GPU writes in the same submission would be read as last copied back; a storage one keeps the dummy (its writes would go to the copy)
+typedef struct { uint64_t mem, pool; uint32_t fmt, n; } tbkey;   // pool: the chunk's serial (vkpool_t.serial)
+static nvn_hmap g_tbuf_cache = {.klen = sizeof(tbkey)}; static pthread_mutex_t g_tbuf_mu = PTHREAD_MUTEX_INITIALIZER;
+// A pool chunk goes (gfx_vk_core.c mtl_pool_del): the views over its buffer leave the cache and are destroyed once the GPU is past the submission open or next (vk_defer_free_bview,
+// listed before the buffer itself). Keyed by the serial they were never handed out again (a pool made at the same address has another serial), but never destroyed either: one
+// VkBufferView and one entry per buffer texture bound from every pool ever made stayed for the life of the process (a game that makes and drops pools as it streams kept growing)
+void vk_tbuf_drop_pool(uint64_t serial) {
+    for (int n = 64; n == 64;) {   // 64 keys a pass (nvn_hm_del rehashes), the views destroyed outside the lock
+        tbkey ks[64]; VkBufferView vs[64]; n = 0;
+        pthread_mutex_lock(&g_tbuf_mu);
+        for (uint32_t i = 0; i < g_tbuf_cache.cap && n < 64; i++) {
+            if (!g_tbuf_cache.vals[i]) continue;
+            memcpy(&ks[n], g_tbuf_cache.keys + (size_t)i * g_tbuf_cache.klen, sizeof ks[n]);
+            if (ks[n].pool == serial) n++;
+        }
+        int nv = 0; for (int j = 0; j < n; j++) { VkBufferView v = nvn_hm_del(&g_tbuf_cache, &ks[j]); if (v) vs[nv++] = v; }
+        pthread_mutex_unlock(&g_tbuf_mu);
+        for (int j = 0; j < nv; j++) vk_defer_free_bview(vs[j]);
+    }
+}
 VkBufferView vk_tbuf_view(const tex_t *t, int storage) {
-    static nvn_hmap cache = {.klen = 24}; static pthread_mutex_t mu = PTHREAD_MUTEX_INITIALIZER;
     // keyed by the pool too: a pool finalized and another made at the same address has a new VkBuffer, and the old one's memory is freed once the GPU is past it. Keyed by address
     // alone, the view over the old buffer was handed out again and shaders read and wrote freed memory, which the kernel gives to newer buffers (Xenoblade Chronicles 3: the
     // allocator kept inside one of its memory pools had its tree bins overwritten during the opening movie, and malloc crashed at the next scene)
     vkpool_t *pl = t->mem ? vk_pool_of((uint64_t)(uintptr_t)t->mem, 1) : NULL;
-    struct { uint64_t mem, pool; uint32_t fmt, n; } k = {(uint64_t)(uintptr_t)t->mem, pl ? pl->serial : 0, (uint32_t)t->d.format, t->d.width};
-    pthread_mutex_lock(&mu);
-    VkBufferView v = nvn_hm_get(&cache, &k);
+    tbkey k = {(uint64_t)(uintptr_t)t->mem, pl ? pl->serial : 0, (uint32_t)t->d.format, t->d.width};
+    pthread_mutex_lock(&g_tbuf_mu);
+    VkBufferView v = nvn_hm_get(&g_tbuf_cache, &k);
     if (!v) {
         const vkfmt_t *f = vk_fmt(t->d.format); VkBuffer b; VkDeviceSize off = 0;
         uint32_t al = (uint32_t)V.props.limits.minTexelBufferOffsetAlignment;
         int in = f && t->mem && vk_buf_at((uint64_t)(uintptr_t)t->mem, (uint64_t)t->d.width * f->bpb, &b, &off);
         if (in && off % al == 0) {
             VkBufferViewCreateInfo ci = {VK_STRUCTURE_TYPE_BUFFER_VIEW_CREATE_INFO, NULL, 0, b, f->vk, off, (VkDeviceSize)t->d.width * f->bpb};
-            if (vkCreateBufferView(V.dev, &ci, NULL, &v)) v = VK_NULL_HANDLE; else nvn_hm_put(&cache, &k, v);
+            if (vkCreateBufferView(V.dev, &ci, NULL, &v)) v = VK_NULL_HANDLE; else nvn_hm_put(&g_tbuf_cache, &k, v);
         } else if (in && !storage) {
             VkDeviceSize n = (VkDeviceSize)t->d.width * f->bpb, so; VkBuffer sb; void vk_ubd_read(uint64_t a, uint64_t n, uint8_t *dst);
             uint8_t *p = vk_scratch(n, al, &sb, &so); vk_ubd_read((uint64_t)(uintptr_t)t->mem, n, p);
             VkBufferViewCreateInfo ci = {VK_STRUCTURE_TYPE_BUFFER_VIEW_CREATE_INFO, NULL, 0, sb, f->vk, so, n};
             if (vkCreateBufferView(V.dev, &ci, NULL, &v)) v = VK_NULL_HANDLE; else vk_defer_free_bview(v);
             static unsigned nc; if (nc++ < 4) VKLOG("buffer texture at a misaligned offset (%llu, not a multiple of %u; format %#x, %u elements): read from a copy", (unsigned long long)off, al, t->d.format, t->d.width);
-            pthread_mutex_unlock(&mu); return v;   // (not cached: a copy of this bind's bytes)
+            pthread_mutex_unlock(&g_tbuf_mu); return v;   // (not cached: a copy of this bind's bytes)
         } else if (in) VKRED_ONCE(16, "storage buffer texture at a misaligned offset: %llu, not a multiple of %u (format %#x, %u elements): zeros", (unsigned long long)off, al, t->d.format, t->d.width);
         else VKRED_ONCE(16, "buffer texture not in a pool (format %#x, %u elements)", t->d.format, t->d.width);
     }
-    pthread_mutex_unlock(&mu);
+    pthread_mutex_unlock(&g_tbuf_mu);
     return v;
 }
 // CPU readback of texels (ReadTexels): the image copied to scratch memory by a submission of its own, waited for

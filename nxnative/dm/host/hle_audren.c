@@ -46,6 +46,7 @@ static int16_t g_frame[FRAME_MAX * 2]; static int g_frame_n;   // the latest fra
 static _Atomic uint64_t g_frames, g_nonsilent;
 enum { CQ = 4 }; static int16_t g_cq[CQ][FRAME_MAX * 2]; static int g_cq_n[CQ]; static _Atomic uint32_t g_cq_head, g_cq_tail;   // output queue of catch-up frames
 static pthread_mutex_t g_cq_mu = PTHREAD_MUTEX_INITIALIZER; static pthread_cond_t g_cq_cv = PTHREAD_COND_INITIALIZER;   // the render thread signals each frame it takes off the queue (catch-up pacing)
+static pthread_mutex_t g_order_mu = PTHREAD_MUTEX_INITIALIZER;   // the render thread's "queued frame or a new render" and the catch-up path's "render and queue" (frame order)
 static void cq_popped(void) { pthread_mutex_lock(&g_cq_mu); pthread_cond_broadcast(&g_cq_cv); pthread_mutex_unlock(&g_cq_mu); }
 
 typedef struct { void *ptr; uint64_t cap, size; } gbuf;       // same as the front of hle_audio.c's AudioOutBuffer
@@ -54,6 +55,8 @@ typedef struct { void *ptr; uint64_t cap, size; } gbuf;       // same as the fro
 // (sdk+0x1e1390 → sdk+0x12bc10). On the Switch the service signals the game's event through its kernel handle and the game does not call ExecuteAudioRendererRendering. Such an
 // event is replaced with one the host owns (auto-clear), which nothing waits on
 static int g_ev_layout;   // the event's state byte read 1 or 2 when the renderer opened: this SDK keeps the state there (otherwise the check stays off)
+// Not on SDK 10 and older (DM_SDK_OLD): OCTOPATH TRAVELER (SDK 3.5.1) passes the event at open too, but at the first render its state read 0, the host's event went over the slot, and
+// the next read faulted on what the game had put there (SIGSEGV here, before the title, on every driver). FM24 Touch, which needs the check, is on SDK 16
 static void ev_check(void) {
     void **slot = (void **)g_handle[1]; if (!g_ev_layout || !slot || !*slot) return;
     uint8_t st = ((const uint8_t *)*slot)[0x28]; if (st == 1 || st == 2) return;
@@ -78,13 +81,22 @@ static void render_main(void *arg) {
             if (!atomic_load(&g_open)) break;
         }
         if (!nfree) break;
-        const int16_t *src; int got;
+        // Queued catch-up output first, else a render of our own: decided and done under g_order_mu, which the catch-up path holds while it renders and queues. Checked without it,
+        // the queue looked empty while an update was rendering a catch-up frame; this thread's render then waited for that one, came out a frame later and was played first, the
+        // queued frame after it: two 5 ms frames swapped. Animal Crossing: New Horizons' voices clicked at frame boundaries (all 253 jumps in 5 minutes on a 240-sample edge)
+        gbuf *b = free_list[--nfree]; int got, popped = 0;
+        pthread_mutex_lock(&g_order_mu);
         uint32_t h = atomic_load(&g_cq_head);
-        if (h != atomic_load(&g_cq_tail)) { src = g_cq[h % CQ]; got = g_cq_n[h % CQ]; atomic_store(&g_cq_head, h + 1); cq_popped(); }   // play queued catch-up output first
-        else { ev_check(); g_frame_n = 0; exec(g_handle[0], g_handle[1]); src = g_frame; got = g_frame_n; }   // SDK: generate commands → CPU processing (output taken in the host takeover) → signal the game's renderer event
+        if (h != atomic_load(&g_cq_tail)) {
+            got = g_cq_n[h % CQ]; if (got) memcpy(b->ptr, g_cq[h % CQ], (size_t)got * 4);   // (copied before the slot is handed back)
+            atomic_store(&g_cq_head, h + 1); popped = 1;
+        } else {   // SDK: generate commands → CPU processing (output taken in the host takeover) → signal the game's renderer event
+            ev_check(); g_frame_n = 0; exec(g_handle[0], g_handle[1]); got = g_frame_n; if (got) memcpy(b->ptr, g_frame, (size_t)got * 4);
+        }
+        pthread_mutex_unlock(&g_order_mu);
+        if (popped) cq_popped();
         int n = got ? got : 240;
-        gbuf *b = free_list[--nfree];
-        if (got) memcpy(b->ptr, src, (size_t)n * 4); else memset(b->ptr, 0, (size_t)n * 4);
+        if (!got) memset(b->ptr, 0, (size_t)n * 4);
         b->size = (uint64_t)n * 4;
         if (!dm_pcmout_append(out, b)) free_list[nfree++] = b;
     }
@@ -112,7 +124,7 @@ static Result ar_open(void **handle, void *ev, const uint8_t *param, void *work,
     if (r) { LOG("[RED] audren: SDK OpenAudioRenderer failed %#x", r); return r; }
     if (atomic_load(&g_open)) { LOG("[RED] audren: a second renderer (the host drives only one)"); return r; }
     g_handle[0] = handle[0]; g_handle[1] = handle[1];
-    { void **slot = (void **)handle[1]; uint8_t st = slot && *slot ? ((const uint8_t *)*slot)[0x28] : 0; g_ev_layout = (st == 1 || st == 2) && ev && *slot == ev; }
+    { void **slot = (void **)handle[1]; uint8_t st = slot && *slot ? ((const uint8_t *)*slot)[0x28] : 0; g_ev_layout = (st == 1 || st == 2) && ev && *slot == ev && !DM_SDK_OLD(dm_sdk_major()); }
     atomic_store(&g_open, 1);
     g_render_tt = dm_guest_thread_spawn(render_main, NULL, 9, 0x10000);
     return r;
@@ -258,7 +270,7 @@ static _Atomic uint64_t g_updates, g_renders, g_catchups;
 //   +0x48 rendering device and +0x4c execution mode, both must be 1; +0xf8 / +0x100 command buffer start / length), GenerateCommand takes a Span<std::byte> and returns a Span (x0 start, x1 length: the generated command list),
 //   and the mutex UpdateImpl holds is at +0x2d0 (+0x1f0 in SDK 16). The layout is recognized by the presence of the Span version of GenerateCommand
 typedef struct { uint8_t *p; size_t n; } span_t;
-// The update lock before SDK 19 is the one AudioRenderSystem::Update takes at its start, read off the SDK's own code: nn::os::LockMutex(MutexType*) at +0x1d0 in SDK 4.4.0 (Mario Kart 8 Deluxe)
+// The update lock before SDK 19 is the one AudioRenderSystem::Update takes at its start, read off the SDK's own code: nn::os::LockMutex(MutexType*) at +0x1f8 in SDK 3.5.1 (OCTOPATH TRAVELER), +0x1d0 in SDK 4.4.0 (Mario Kart 8 Deluxe)
 //   and at +0x1d8 in SDK 6.4–8.2, SdkMutexType::Lock at +0x1d8 in SDK 10.4–11.4, +0x1f0 in 13.3–16.2, +0x1f8 in 17.5 (the sdk builds of 24 games on hand; 19 and 20 inline it).
 //   The SDK 16 layout (SdkMutexType at +0x1f0) taken for all of them wrote a lock word into another field and excluded nothing. The prologue copies `this`, adds the offset into a register
 //   and moves it to x0 before the first bl, a PLT stub whose GOT slot the loader bound to one of the two functions; anything else keeps the SDK 16 layout
@@ -296,7 +308,6 @@ static Result render_once(uint8_t *sys, int16_t *dst, int *nout) {
     static span_t (*gen20)(void *, void *, size_t); static size_t mu_off;
     static void (*tmax)(void *, uint32_t), (*setup)(void *, const void *, size_t), (*process)(void *), (*lock)(void *), (*unlock)(void *);
     if (!process) {
-        lock = gsym("_ZN2nn2os12SdkMutexType4LockEv"); unlock = gsym("_ZN2nn2os12SdkMutexType6UnlockEv");
         gen20 = guest_sym("_ZN2nn5audio6server17AudioRenderSystem15GenerateCommandENS_4SpanISt4byteEE");
         if (!gen20) {
             mode = gsym("_ZNK2nn5audio6server17AudioRenderSystem16GetExecutionModeEv"); device = gsym("_ZNK2nn5audio6server17AudioRenderSystem18GetRenderingDeviceEv");
@@ -305,7 +316,9 @@ static Result render_once(uint8_t *sys, int16_t *dst, int *nout) {
         }
         mu_off = gen20 ? 0x2d0 : 0x1f0; g_sink_id = gen20 ? 0x14 : 0x13;
         int os_mutex = 0;
+        // SdkMutexType is looked up only when the SDK uses it: SDK 3.5.1 has none (OCTOPATH TRAVELER: LockMutex at +0x1f8)
         if (!gen20 && update_lock(&mu_off, &os_mutex) && os_mutex) { lock = gsym("_ZN2nn2os9LockMutexEPNS0_9MutexTypeE"); unlock = gsym("_ZN2nn2os11UnlockMutexEPNS0_9MutexTypeE"); }
+        else { lock = gsym("_ZN2nn2os12SdkMutexType4LockEv"); unlock = gsym("_ZN2nn2os12SdkMutexType6UnlockEv"); }
         LOG("audren: AudioRenderSystem in the SDK %s layout (update lock %s at +%#zx)", gen20 ? "20" : "16", os_mutex ? "nn::os::MutexType" : "SdkMutexType", mu_off);
         tmax = gsym("_ZN2nn5audio3dsp20CommandListProcessor17SetProcessTimeMaxEj"); setup = gsym("_ZN2nn5audio3dsp20CommandListProcessor5SetupEPKvm");
         process = gsym("_ZN2nn5audio3dsp20CommandListProcessor7ProcessEv");
@@ -352,10 +365,17 @@ HLE_FORCE("_ZN2nn5audio6server17AudioRenderSystem6UpdateEPvmS3_mPKvm", "renderer
           Result, h_ars_Update, uint8_t *sys, void *o, size_t on, void *p, size_t pn, const void *in, size_t inn) {
     static Result (*orig)(void *, void *, size_t, void *, size_t, const void *, size_t); if (!orig) orig = gsym("_ZN2nn5audio6server17AudioRenderSystem6UpdateEPvmS3_mPKvm");
     static uint64_t last_r = ~0ull;
+    static _Atomic uint64_t last_u_ns; static _Atomic int ntr;
+    const char *tre = getenv("DM_AUDREN_TRACE"); int tr = tre != NULL;   // (live: a DM_CTL env line)
+    uint64_t un = now_ns(), gap = un - atomic_exchange(&last_u_ns, un);
     uint64_t u = atomic_fetch_add(&g_updates, 1) + 1, r = atomic_load(&g_renders);
     if (last_r != ~0ull && r == last_r) {
         uint64_t c = atomic_fetch_add(&g_catchups, 1) + 1;
         if (c <= 3) LOG("audren: no frame rendered before update %llu, rendering a catch-up frame first (%llu so far)", (unsigned long long)u, (unsigned long long)c);
+        // DM_AUDREN_TRACE: the next 300 catch-ups with the calling thread, the time since the previous update and the frames queued ahead: a late sound thread that then updates
+        // twice in a burst (gap above 5 ms, then under 1 ms) is a scheduling problem; updates evenly about 6-7 ms apart are the game's own pace
+        if (tr && atomic_fetch_add(&ntr, 1) < 300) LOG("audren: catch-up at update %llu on thread %#lx, %.2f ms after the previous update, %u frames queued", (unsigned long long)u,
+            (unsigned long)pthread_self(), gap / 1e6, atomic_load(&g_cq_tail) - atomic_load(&g_cq_head));
         uint32_t t = atomic_load(&g_cq_tail);
         if (t - atomic_load(&g_cq_head) >= CQ) {   // queue full: wait for the render thread to play one (every 5 ms), so catch-up frames keep real time; at most 50 ms (an output that stopped)
             struct timespec dl; clock_gettime(CLOCK_REALTIME, &dl); dl.tv_nsec += 50000000; if (dl.tv_nsec >= 1000000000) { dl.tv_sec++; dl.tv_nsec -= 1000000000; }
@@ -363,10 +383,13 @@ HLE_FORCE("_ZN2nn5audio6server17AudioRenderSystem6UpdateEPvmS3_mPKvm", "renderer
             while (atomic_load(&g_open) && t - atomic_load(&g_cq_head) >= CQ && !pthread_cond_timedwait(&g_cq_cv, &g_cq_mu, &dl)) {}
             pthread_mutex_unlock(&g_cq_mu);
         }
-        if (t - atomic_load(&g_cq_head) < CQ) { render_once(sys, g_cq[t % CQ], &g_cq_n[t % CQ]); atomic_store(&g_cq_tail, t + 1); }
-        else render_once(sys, NULL, NULL);   // still full (the output stopped): render anyway, output discarded
+        pthread_mutex_lock(&g_order_mu);   // render and queue as one step against the render thread's choice (render_main); a frame the render thread finished meanwhile counts
+        if (atomic_load(&g_renders) == last_r) {
+            if (t - atomic_load(&g_cq_head) < CQ) { render_once(sys, g_cq[t % CQ], &g_cq_n[t % CQ]); atomic_store(&g_cq_tail, t + 1); }
+            else render_once(sys, NULL, NULL);   // still full (the output stopped): render anyway, output discarded
+        }
+        pthread_mutex_unlock(&g_order_mu);
     }
-    static int tr = -1; if (tr < 0) tr = getenv("DM_AUDREN_TRACE") != NULL;
     if (tr && u < 200) LOG("audren update #%llu t=%.3f ms, %llu frames rendered since the last update", (unsigned long long)u, now_ns() / 1e6, (unsigned long long)(atomic_load(&g_renders) - (last_r == ~0ull ? 0 : last_r)));
     Result res = orig(sys, o, on, p, pn, in, inn);
     last_r = atomic_load(&g_renders);

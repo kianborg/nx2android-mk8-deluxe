@@ -84,6 +84,10 @@ def load_patches():
     return tables, where
 PATCHES, PATCH_WHERE = load_patches()
 BUILD_ID = d[0x40:0x50].hex()
+FS_STATE_OFF = 0
+if BUILD_ID in PATCHES['FRAME_STEP'] and NAME == 'main':
+    FS_STATE_OFF = KEY_PAGE_OFF + 0x4000
+    PATCH_OFF = max(PATCH_OFF, (FS_STATE_OFF + 0x4000 + 0xFFFF) & ~0xFFFF)
 cuts = list(PATCHES['CUTS'].get(BUILD_ID, []))
 for off, ob, nb, why in cuts:
     ob, nb = bytes.fromhex(ob), bytes.fromhex(nb)
@@ -563,13 +567,15 @@ def jump_offsets(insl, j, copy_first=False, far_base=False):
         if m and m.group(1) in idx: idx.add(m.group(2)); continue
         m = re.fullmatch(r'([wx]\d+), ([wx]\d+), #(0x[0-9a-f]+|\d+)', p.op_str) if p.mnemonic == 'and' else None
         if m and wname(m.group(1)) in idx and masked is None: masked = (wname(m.group(2)), int(m.group(3), 0), i); continue
-        m = re.fullmatch(r'(w\d+), #(0x[0-9a-f]+|\d+)', p.op_str) if p.mnemonic == 'cmp' else None
+        # A 64-bit check of the index bounds it as well (OCTOPATH TRAVELER 1.0.5 main+0x1676f30: cmp x22,#0x10; ...; b.hi; adrp x18 + add x18; mov x0,x18; ldrsw x18,[x0,x22,lsl #2];
+        # add x18,x18,x0, the base copied, so only far_base reads it); taken only in the last attempt, so sites that rewrote before come out the same
+        m = re.fullmatch(r'([wx]\d+), #(0x[0-9a-f]+|\d+)' if far_base else r'(w\d+), #(0x[0-9a-f]+|\d+)', p.op_str) if p.mnemonic == 'cmp' else None
         if not m: continue
-        if m.group(1) in idx: cmp = p; break
+        if wname(m.group(1)) in idx: cmp = p; break
         if masked:   # the checked register must be "the same source & the same mask", with the source unchanged up to the index's and
             for q in range(i - 1, -1, -1):
                 w = [wname(ctx[q].reg_name(r)) for r in ctx[q].regs_access()[1]]
-                if m.group(1) not in w: continue
+                if wname(m.group(1)) not in w: continue
                 mm = re.fullmatch(r'([wx]\d+), ([wx]\d+), #(0x[0-9a-f]+|\d+)', ctx[q].op_str) if ctx[q].mnemonic == 'and' else None
                 if mm and wname(mm.group(2)) == masked[0] and int(mm.group(3), 0) == masked[1] and \
                    not any(masked[0] in [wname(ctx[z].reg_name(r)) for r in ctx[z].regs_access()[1]] for z in range(q + 1, masked[2])):
@@ -903,10 +909,8 @@ for off, oid, ow, why in obs:
 # A build's stubs are FRAME_STEP[build ID](ctx) in its patches.py: ctx.here() / ctx.emit(word) assemble into the patch area, ctx.site(offset, original bytes) asserts a site and that it is
 # no rewrite site, ctx.put(offset, words, reason) writes it (listed with the cuts), ctx.state is the state page's offset, and ctx.render_scale = 1 marks a render-scale stub
 FRAME_STEP = PATCHES['FRAME_STEP']
-FS_STATE_OFF = 0
 RENDER_SCALE = 0   # 1 = the build has a render-scale stub (state +0x10): the fixups table says so (RENDER_SCALE), and the iOS launcher offers the setting (dm/games/settings.tsv)
 if BUILD_ID in FRAME_STEP and NAME == 'main':
-    FS_STATE_OFF = KEY_PAGE_OFF + 0x4000
     assert not FAR and FS_STATE_OFF % 0x1000 == 0 and FS_STATE_OFF + 0x40 <= PATCH_OFF and not any(IMG[FS_STATE_OFF:]), 'frame step state page'
     def fs_site(off, orig):
         ob = bytes.fromhex(orig)

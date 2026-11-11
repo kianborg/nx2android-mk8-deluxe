@@ -360,6 +360,11 @@ def build_nx_extract(repo, work, logs, env):
     return nx
 
 
+def require_64bit(exefs, what):   # a 32-bit (AArch32) game stops here: the rewriter, the host and every module tool read only 64-bit (AArch64) code (Rune Factory 4 Special, issue #161)
+    if pg.is_64bit(Path(exefs) / 'main.npdm') is False:
+        raise BuildError(f'{what} is a 32-bit (AArch32) Switch game: nx2android runs only 64-bit (AArch64) games, so it cannot be ported')
+
+
 def swap_in(tmp, dst):   # swap the new output in as a whole (the old one is untouched on failure)
     rmtree(dst)
     # Windows refuses to rename a folder while a file inside is still open, and a virus scanner opens freshly written files for a moment ("[WinError 5] Access is
@@ -428,11 +433,17 @@ def title_of(path, hk=None):
     "hr-bdlwa.xci", issue #28), else [title ID] in the file name. A file name's tag can be wrong (FFT's base NSP is tagged …0001, its ticket is …0000)"""
     with open(path, 'rb') as f:
         files = dump_files(f)
-        for n, _ in files:
-            if re.match(r'[0-9A-Fa-f]{32}\.tik$', n): return int(n[:16], 16)
-        if hk and aes_ecb(hk[:16]):   # the smallest when a card holds more than one title: the base game …000 before its update …800 and DLC
-            tids = [t for n, o in files if n.endswith(('.nca', '.ncz')) and (t := meta_title(f, o, hk)) is not None]
-            if tids: return min(tids)
+        tids = [int(n[:16], 16) for n, _ in files if re.match(r'[0-9A-Fa-f]{32}\.tik$', n)]
+        # a cartridge may carry its update's ticket only (Crayon Shin-chan: …800.tik beside the base game's ticketless NCAs): its meta NCAs count too
+        if hk and aes_ecb(hk[:16]) and (not tids or Path(path).suffix.lower() in ('.xci', '.xcz')):
+            tids += [t for n, o in files if n.endswith(('.nca', '.ncz')) and (t := meta_title(f, o, hk)) is not None]
+        if tids:
+            tids = sorted(set(tids))   # several rights IDs can name the same title
+            if len(tids) > 1:
+                say(f'[RED] {path.name}: multiple titles in one file; using {tids[0]:016X}. '
+                    f'Other titles ({", ".join(f"{t:016X}" for t in tids[1:])}) are not selected as updates or DLC '
+                    'from this file. Supply the base game, update and DLC as separate files.')
+            return tids[0]   # the base game …000 before its update …800 and DLC
     m = re.search(r'\[([0-9A-Fa-f]{16})\]', path.name)
     return int(m.group(1), 16) if m else None
 
@@ -526,6 +537,7 @@ def survey(nsp_dir, app, fam, keys, repo, py, env):
     say(f'extracting the code modules and a RomFS manifest (no game files written) → {ex}')
     run([nx, keys, fam['base'], upd or '-', tmp, '--manifest'] + (['--allow-damaged'] if ALLOW_DAMAGED else []), logs / 'extract.log')
     swap_in(tmp, ex)
+    require_64bit(ex / 'ExeFS', f'{nacp.name(ex / "control.nacp") or "the game"} ({app:016X})')
     PROG.stage('survey: code modules', step='reading')
     xlog = (logs / 'extract.log').read_text(errors='replace')
     dv = re.search(r'display version (\S+)', xlog)

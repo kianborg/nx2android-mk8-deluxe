@@ -115,8 +115,12 @@ def header(g):
     if tdu not in ('on', 'off') or (tdu == 'on' and tfu != 'on'): sys.exit(f'{g.id}: tex_dirty_upload must be on or off, and needs tex_flush_upload on: {tdu}')
     tds = g.get('tex_dyn_slots', 'off')   # shaders whose texture handle the translator could not trace to one slot: slot indices in c2, the bound slots in the fallback arrays (nvn_mtl.m): on / off
     if tds not in ('on', 'off'): sys.exit(f'{g.id}: tex_dyn_slots must be on or off: {tds}')
+    ok = g.get('order_keep', 'off')   # Android: NVN barriers of only ORDER_PRIMITIVES / ORDER_FRAGMENTS(_TILED) keep the pass open unless the next draw needs them (android/gfx_vk_exec.c g_order_keep): on / off
+    if ok not in ('on', 'off'): sys.exit(f'{g.id}: order_keep must be on or off: {ok}')
     vcr = g.get('vconv_range', 'off')   # vertex attributes converted on the CPU only over the vertices each draw reads (nvn_mtl.m vc_draw_range): on / off
     if vcr not in ('on', 'off'): sys.exit(f'{g.id}: vconv_range must be on or off: {vcr}')
+    svs = g.get('small_vpool_sparse', 'off')   # virtual pools no larger than the application pool get their own range and may become sparse at the first mapping (hle_nvn.c vpool_reserve): on / off
+    if svs not in ('on', 'off'): sys.exit(f'{g.id}: small_vpool_sparse must be on or off: {svs}')
     mml = g.get('mem_map_limit', 'off')   # MapPhysicalMemory refused beyond the application pool, as on Horizon (hle_svc.c): on / off
     if mml not in ('on', 'off'): sys.exit(f'{g.id}: mem_map_limit must be on or off: {mml}')
     gts = g.get('gpu_timestamps', 'submission')   # counter timestamps (nvn_mtl.m rep_ticks): submission = one time per submission, segment = the GPU start / end of the segment holding the report
@@ -146,6 +150,7 @@ def header(g):
          f'#define DM_GAME_ARGS {q(g.get("game_args", ""))}',   # game arguments when the command line gives none (main.c; Octopath Traveler 0: Unreal's -SwitchVirtualAddressSpaceSize=)
          f'#define DM_GAME_ENV {q(g.get("game_env", ""))}',   # KEY=VALUE pairs getenv answers (hle_os.c; Absolum: .NET's DOTNET_GCRegionRange)
          f'#define DM_GAME_MEM_MAP_LIMIT {int(mml == "on")}',
+         f'#define DM_GAME_SMALL_VPOOL_SPARSE {int(svs == "on")}',
          f'#define DM_GAME_DISPLAY_VERSIONS {vers}',
          f'#define DM_GAME_PRESENT_DISPLAY {int(pi == "display")}',
          f'#define DM_GAME_CORE_PREEMPT {int(cp == "on")}',
@@ -164,6 +169,7 @@ def header(g):
          f'#define DM_GAME_TEX_DYN_SLOTS {int(tds == "on")}',
          f'#define DM_GAME_GPU_TS_SEGMENT {int(gts == "segment")}',
          f'#define DM_GAME_VCONV_RANGE {int(vcr == "on")}',
+         f'#define DM_GAME_ORDER_KEEP {int(ok == "on")}',
          *([f'#define DM_GAME_NVN_API_MAJOR {api.split(".")[0]}', f'#define DM_GAME_NVN_API_MINOR {api.split(".")[1]}'] if g.get('device_api', '') else []),   # without the key: by the SDK version (hle_nvn.c nvn_api)
          '']
     return '\n'.join(L)

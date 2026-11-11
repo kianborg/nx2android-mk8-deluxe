@@ -184,7 +184,7 @@ class DataPack(unittest.TestCase):
 
 class Experimental(unittest.TestCase):
     def test_ios_profile_copied_with_experimental_android_tsv(self):   # an iOS-only profile is copied out of the repository, never edited in place
-        ios_only = '010028600EBDA000'   # Super Mario 3D World + Bowser's Fury: an iOS profile without android.tsv or patches.py
+        ios_only = '010099C022B96000'   # Super Mario Galaxy: an iOS profile without android.tsv or patches.py (it renders with Vulkan itself, which the Android host does not take)
         t = Path(tempfile.mkdtemp(prefix='nx2a_test_exp_')); environ = dict(os.environ)
         try:
             port = pipeline.Port(pipeline.Options(folder=t, experimental=True)); port.env = {}; port.work = t / f'{ios_only}_build'; port.o.keys = None
@@ -196,6 +196,47 @@ class Experimental(unittest.TestCase):
             self.assertEqual(os.environ.get('DM_GAMES_FIRST'), '1')
         finally:
             os.environ.clear(); os.environ.update(environ); shutil.rmtree(t, ignore_errors=True)
+
+    @staticmethod
+    def _npdm(exefs, flags):   # a main.npdm: META magic, the flags byte (bit 0 Is64BitInstruction) at 0xC
+        exefs.mkdir(parents=True, exist_ok=True); d = bytearray(0x80); d[:4] = b'META'; d[0xC] = flags; (exefs / 'main.npdm').write_bytes(bytes(d))
+
+    def test_32bit_game_refused(self):   # issue #161: Rune Factory 4 Special is AArch32 (flags 0x0); every 64-bit game has bit 0 set (0x27, 0x37)
+        from porter.upstream import BuildError, nsp
+        t = Path(tempfile.mkdtemp(prefix='nx2a_test_32_'))
+        try:
+            nsp.require_64bit(t, 'no npdm')   # no main.npdm: nothing to judge, the run goes on
+            self._npdm(t, 0x37); nsp.require_64bit(t, 'a 64-bit game')
+            self._npdm(t, 0x00)
+            with self.assertRaisesRegex(BuildError, r'32-bit \(AArch32\)'): nsp.require_64bit(t, 'Rune Factory 4 Special')
+        finally: shutil.rmtree(t, ignore_errors=True)
+
+    def test_32bit_reused_provisional_profile_refused(self):   # a provisional profile an older porter wrote for a 32-bit game is not reused
+        from porter.upstream import BuildError
+        tid = '010051D00E3A4000'; t = Path(tempfile.mkdtemp(prefix='nx2a_test_32_')); environ = dict(os.environ)
+        try:
+            d = t / f'{tid}_build/profile/{tid}'; d.mkdir(parents=True); (d / 'game.tsv').write_text(f'title_id\t{tid}\n')
+            self._npdm(t / f'{tid}_survey/extract/ExeFS', 0x00)
+            port = pipeline.Port(pipeline.Options(folder=t, experimental=True)); port.env = {}; port.work = t / f'{tid}_build'
+            with self.assertRaisesRegex(BuildError, '32-bit'): port.experimental_profile(None, tid)
+        finally:
+            os.environ.clear(); os.environ.update(environ); shutil.rmtree(t, ignore_errors=True)
+
+    def test_dynsyms_elf32_is_named(self):   # an AArch32 module's ELF32 dynamic entries read as 64-bit ones have no DT_SYMTAB: a ValueError that says so, not KeyError: 6
+        sys.path.insert(0, str(REPO / 'nxnative/dm/tools')); import nso_syms
+        img = bytearray(0x400); struct.pack_into('<I', img, 4, 0x100); img[0x100:0x104] = b'MOD0'; struct.pack_into('<i', img, 0x104, 0x100)
+        for i, (tag, v) in enumerate([(1, 1), (1, 0x4b), (0x15, 0), (6, 0x300), (5, 0x340), (0, 0)]): struct.pack_into('<II', img, 0x200 + i * 8, tag, v)   # Elf32_Dyn
+        with self.assertRaisesRegex(ValueError, 'not a 64-bit NSO'): nso_syms.dynsyms(bytes(img))
+
+    def test_crash_log(self):   # an error porter does not expect: the traceback goes to <build folder>/logs/crash.log, and the error is raised again
+        t = Path(tempfile.mkdtemp(prefix='nx2a_test_crash_'))
+        try:
+            port = pipeline.Port.__new__(pipeline.Port); port.work = t / 'X_build'
+            def boom(): return {}[6]
+            port._run = boom
+            with self.assertRaises(KeyError): port.run()
+            self.assertIn('KeyError: 6', (t / 'X_build/logs/crash.log').read_text(encoding='utf-8'))
+        finally: shutil.rmtree(t, ignore_errors=True)
 
 
 class Misc(unittest.TestCase):
@@ -420,6 +461,12 @@ class UntaggedXci(unittest.TestCase):   # issue #28: a cartridge dump named by i
         self.assertEqual(app, self.BASE); self.assertEqual(fam['base'].name, 'hr-bdlwa.xci')
         self.xci('hr-bdlwa.xci', [('c.nca', self.nca(self.BASE + 0x800, 0)), ('d.cnmt.nca', self.nca(self.BASE + 0x800, 1))], key_area=True)
         self.assertEqual(pipeline.nsp.title_of(self.d / 'hr-bdlwa.xci', self.hk), self.BASE + 0x800)
+
+    def test_update_ticket_on_the_card(self):   # Crayon Shin-chan's cartridge: its update's ticket beside the base game's ticketless NCAs is not the card's title
+        tik = f'{self.BASE + 0x800:016x}0000000000000011.tik'
+        self.xci('Game (Base).xci', [(tik, b't' * 0x2c0), ('b.cnmt.nca', self.nca(self.BASE + 0x800, 1)), ('d.cnmt.nca', self.nca(self.BASE, 1))])
+        self.assertEqual(pipeline.nsp.title_of(self.d / 'Game (Base).xci', self.hk), self.BASE)
+        self.assertEqual(pipeline.nsp.title_of(self.d / 'Game (Base).xci'), self.BASE + 0x800)   # without prod.keys only the ticket is there to read
 
     def test_without_keys_the_error_says_how(self):
         self.xci('hr-bdlwa.xci', [('d.cnmt.nca', self.nca(self.BASE, 1))])

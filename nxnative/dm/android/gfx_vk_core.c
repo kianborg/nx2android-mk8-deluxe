@@ -24,6 +24,7 @@
 VK_FNS(VK_DEF) VK_DEV_FNS(VK_DEF)
 static PFN_vkGetInstanceProcAddr p_vkGetInstanceProcAddr;
 vkdev_t V;
+#include "gfx_vk_pipeline_cache.inc"
 pthread_mutex_t g_vk_queue_mu = PTHREAD_MUTEX_INITIALIZER;   // VkQueue access is externally synchronized: submissions and presents
 
 // DM_VK_MEM_DIAG=1 at startup: observe copied-pool costs without changing memory protection or rendering.
@@ -213,6 +214,7 @@ void vk_init(void) {
     // dynamic rendering is 1.3 or its extension with the feature on; a loaded pointer does not tell, since the loader hands out a trampoline for core functions the driver lacks
     V.has_dynrender = v13 ? f13.dynamicRendering : featx(xf, nxf, VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_DYNAMIC_RENDERING_FEATURES)[0];
     // imageless framebuffers need render pass 2 (gfx_vk_exec.c rp_get): core in 1.2, else its extension
+    V.has_draw_count = v12 ? f12.drawIndirectCount : is_on(on, non, "VK_KHR_draw_indirect_count");
     V.has_imageless = v12 ? f12.imagelessFramebuffer : featx(xf, nxf, VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_IMAGELESS_FRAMEBUFFER_FEATURES)[0] && is_on(on, non, "VK_KHR_create_renderpass2");
     if (!V.has_imageless && !V.has_dynrender) die("[vk] the device has neither dynamic rendering nor imageless framebuffers with render pass 2: passes cannot be begun");
     if (!v13) VKLOG("Vulkan %u.%u device: %u extensions enabled for the features promoted to 1.2 / 1.3; dynamic rendering %s", VK_API_VERSION_MAJOR(V.props.apiVersion),
@@ -278,13 +280,7 @@ void vk_init(void) {
     }
     { void vk_dq_init(void); vk_dq_init(); }   // DM_VK_MT_REPLAY: the vkCmd* calls through the recorder thread (gfx_vk_dq.c)
     vkGetDeviceQueue(V.dev, V.qf, 0, &V.q);
-    VkPipelineCacheCreateInfo pci = {VK_STRUCTURE_TYPE_PIPELINE_CACHE_CREATE_INFO};
-    char path[1024]; const char *root = getenv("DM_ROOT"); void *data = NULL; size_t dn = 0;
-    if (root && !getenv("DM_VK_NOPCACHE")) { snprintf(path, sizeof path, "%s/vk_pipeline_cache.bin", root); FILE *f = fopen(path, "rb");   // DM_VK_NOPCACHE=1: start empty
-        if (f) { fseek(f, 0, SEEK_END); dn = (size_t)ftell(f); fseek(f, 0, SEEK_SET); data = malloc(dn); if (fread(data, 1, dn, f) != dn) dn = 0; fclose(f); } }
-    pci.initialDataSize = dn; pci.pInitialData = data;
-    if (vkCreatePipelineCache(V.dev, &pci, NULL, &V.pcache)) { pci.initialDataSize = 0; pci.pInitialData = NULL; VKCHK(vkCreatePipelineCache(V.dev, &pci, NULL, &V.pcache)); }
-    free(data); free(ex);
+    size_t dn = pcache_load(); free(ex);
     VKLOG("%s, Vulkan %u.%u, driver %#x; timeline semaphores %s, BC %s, ASTC %s, geometry shaders %s, nullDescriptor %s, custom border colours %s, depth clip control %s, transform feedback %s; pipeline cache %zu bytes",
           V.props.deviceName, VK_API_VERSION_MAJOR(V.props.apiVersion), VK_API_VERSION_MINOR(V.props.apiVersion), V.props.driverVersion, V.has_timeline ? "yes" : "no (fences)",
           V.has_bc ? "yes" : "no (decoded on the CPU)", V.has_astc ? "yes" : "no", V.has_gs ? "yes" : "no", V.has_robust2 ? "yes" : "no", V.has_custom_border ? "yes" : "no", V.has_depth_clip_ctl ? "yes" : "no", V.has_xfb ? "yes" : "no", dn);
@@ -299,17 +295,6 @@ const void *vk_sg_pin(VkShaderStageFlagBits stage, const uint32_t *local) {
     // a compute workgroup must fit in maxComputeWorkgroupSubgroups subgroups of the pinned size (VUID-VkPipelineShaderStageCreateInfo-pNext-02756): a larger one keeps the driver's size
     if (local && (uint64_t)local[0] * local[1] * local[2] > (uint64_t)V.sg_pin.requiredSubgroupSize * V.sg_maxwgs) return NULL;
     return &V.sg_pin;
-}
-void vk_pipeline_cache_save(void) {
-    static pthread_mutex_t mu = PTHREAD_MUTEX_INITIALIZER; static size_t last;
-    const char *root = getenv("DM_ROOT"); if (!root || !V.pcache) return;
-    pthread_mutex_lock(&mu);
-    size_t n = 0; if (vkGetPipelineCacheData(V.dev, V.pcache, &n, NULL) || !n || n == last) { pthread_mutex_unlock(&mu); return; }   // unchanged since the last save
-    last = n; pthread_mutex_unlock(&mu);
-    void *d = malloc(n); if (vkGetPipelineCacheData(V.dev, V.pcache, &n, d)) { free(d); return; }
-    char path[1024], tmp[1100]; snprintf(path, sizeof path, "%s/vk_pipeline_cache.bin", root); snprintf(tmp, sizeof tmp, "%s.tmp", path);
-    FILE *f = fopen(tmp, "wb"); if (f) { fwrite(d, 1, n, f); fclose(f); rename(tmp, path); }
-    free(d);
 }
 
 // ---------------- memory pools ----------------
@@ -379,21 +364,142 @@ static void pool_cache_sync(vkpool_t *p, int invalidate, uint64_t lo, uint64_t h
     else { VKCHK(vkFlushMappedMemoryRanges(V.dev, 1, &range)); }
     if (diag) mem_diag_note(invalidate ? 4 : 3, t, range.size == VK_WHOLE_SIZE ? p->hi - p->lo - range.offset : range.size);
 }
-// Zero copy: the pages of [mem, mem+size) become an AHardwareBuffer's, imported as a VkBuffer. 0 on success
+// Freed zero-copy pools' buffers, kept for the next pool of the same size (DM_VK_POOL_REUSE=0 turns it off): a pool made from one skips the hardware buffer's
+// allocation (a binder call to the allocator service) and the driver's import, which took Pokémon Scarlet's three loading threads ~130 + ~100 ms each while a thrown
+// ball's capture assets load (they drop old pools as they make new ones; the game waits on them, frames of 100-220 ms), and a pool dropped from a game thread no longer
+// waits for the GPU (df_add outside a submission waits for every submission so far). An entry is taken only once the GPU has passed the submission open or next when
+// it was kept; the oldest the GPU is done with make room
+typedef struct { AHardwareBuffer *ahb; VkBuffer buf; VkDeviceMemory mem; uint64_t size, fence; } zcfree_t;
+enum { ZCF_N = 128 };
+#define ZCF_BYTES (384ull << 20)
+static zcfree_t g_zcf[ZCF_N]; static int g_nzcf; static uint64_t g_zcf_bytes; static pthread_mutex_t g_zcf_mu = PTHREAD_MUTEX_INITIALIZER;
+static uint64_t g_zcf_hit, g_zcf_miss, g_zcf_kept;   // under g_zcf_mu (the pool line)
+uint64_t mtl_last_fence(void);
+static int zcf_on(void) { static int v = -1; if (v < 0) { const char *e = getenv("DM_VK_POOL_REUSE"); v = !(e && !atoi(e)); } return v; }
+static void zcf_free_now(const zcfree_t *e) { vkDestroyBuffer(V.dev, e->buf, NULL); vkFreeMemory(V.dev, e->mem, NULL); AHardwareBuffer_release(e->ahb); }
+static int zcf_take(uint64_t size, zcfree_t *out) {
+    if (!zcf_on()) return 0;
+    uint64_t done = vk_fence_done(); int r = 0;
+    pthread_mutex_lock(&g_zcf_mu);
+    for (int i = 0; i < g_nzcf; i++) if (g_zcf[i].size == size && g_zcf[i].fence <= done) {
+        *out = g_zcf[i]; memmove(g_zcf + i, g_zcf + i + 1, (size_t)(g_nzcf - i - 1) * sizeof *g_zcf); g_nzcf--; g_zcf_bytes -= size; r = 1; break; }
+    if (r) g_zcf_hit++; else g_zcf_miss++;
+    pthread_mutex_unlock(&g_zcf_mu);
+    return r;
+}
+static int zcf_put(AHardwareBuffer *ahb, VkBuffer buf, VkDeviceMemory mem, uint64_t size) {   // 1: kept (the caller frees nothing)
+    if (!zcf_on() || size > ZCF_BYTES / 4) return 0;
+    zcfree_t e = {ahb, buf, mem, size, mtl_last_fence() + 1}, old[ZCF_N]; int nold = 0;
+    uint64_t done = vk_fence_done();
+    pthread_mutex_lock(&g_zcf_mu);
+    while (g_nzcf == ZCF_N || g_zcf_bytes + size > ZCF_BYTES) {   // the oldest the GPU is done with go
+        int i = 0; while (i < g_nzcf && g_zcf[i].fence > done) i++;
+        if (i == g_nzcf) break;
+        old[nold++] = g_zcf[i]; g_zcf_bytes -= g_zcf[i].size; memmove(g_zcf + i, g_zcf + i + 1, (size_t)(g_nzcf - i - 1) * sizeof *g_zcf); g_nzcf--;
+    }
+    int kept = g_nzcf < ZCF_N && g_zcf_bytes + size <= ZCF_BYTES;
+    if (kept) { g_zcf[g_nzcf++] = e; g_zcf_bytes += size; g_zcf_kept++; }
+    pthread_mutex_unlock(&g_zcf_mu);
+    for (int i = 0; i < nold; i++) zcf_free_now(&old[i]);
+    return kept;
+}
+// Small pools take a slot of a slab (DM_VK_POOL_SLABS=0 turns it off): one hardware buffer allocated and imported once, its slots mapped at the pools' addresses
+// (its dma-buf mmapped at the slot's offset) and bound at the slot's offset (vkpool_t.boff). A hardware buffer of its own cost a 48 KB pool ~170 us to allocate (a binder
+// call to the allocator service) and ~180 us to import on an AYN Thor, Turnip and Qualcomm's driver alike, ~0.9 ms a pool with the mappings, and Pokémon Scarlet makes
+// ~1,000 pools of 4-256 KB a second while a thrown ball's capture assets load (1,500 a second while a save loads): its loading threads spent ~0.5 s a throw on them while
+// the game waited, in frames of 100-190 ms. Neither driver offers VK_EXT_external_memory_host, which would take the game's own pages. Slots are 1, 2, 3, 4, 6, 8 ... 64 pages
+// (at most 50% larger than the pool), 64 a slab, between 2 and 8 MB; slabs are kept for good, as the image blocks are, and a freed slot is taken again once the GPU has
+// passed the submission open or next when it was freed
+#define SLAB_POOL_MAX (256ull << 10)
+static const uint32_t SLAB_PAGES[] = {1, 2, 3, 4, 6, 8, 12, 16, 24, 32, 48, 64};
+enum { SLAB_NCLS = sizeof SLAB_PAGES / sizeof *SLAB_PAGES, SLAB_SLOTS = 512 };
+typedef struct slab_t { struct slab_t *next; AHardwareBuffer *ahb; int fd; uint8_t *map; VkBuffer buf; VkDeviceMemory mem; uint64_t slot_bytes; uint32_t nslot, nfree;
+                        uint64_t bits[SLAB_SLOTS / 64], fence[SLAB_SLOTS]; } slab_t;   // bits: 1 = slot free; fence: the submission the GPU must have passed before it is taken
+static slab_t *g_slab[SLAB_NCLS]; static pthread_mutex_t g_slab_mu = PTHREAD_MUTEX_INITIALIZER;
+static uint64_t g_slab_used, g_slab_bytes;   // pools placed in slabs so far, slab memory (under g_slab_mu: the pool line)
+static int slab_on(void) { static int v = -1; if (v < 0) { const char *e = getenv("DM_VK_POOL_SLABS"); v = !(e && !atoi(e)); } return v; }
+static slab_t *slab_new(int c) {   // a slab of class c, allocated and imported (no lock held)
+    uint64_t sb = (uint64_t)SLAB_PAGES[c] << 12; uint32_t n = 64;
+    if (sb * n < (2u << 20)) n = (uint32_t)((2u << 20) / sb); if (sb * n > (8u << 20)) n = (uint32_t)((8u << 20) / sb); if (n > SLAB_SLOTS) n = SLAB_SLOTS;
+    uint64_t size = sb * n; slab_t *s = calloc(1, sizeof *s); if (!s) return NULL;
+    s->slot_bytes = sb; s->nslot = s->nfree = n; s->fd = -1;
+    AHardwareBuffer_Desc d = {(uint32_t)size, 1, 1, AHARDWAREBUFFER_FORMAT_BLOB, AHARDWAREBUFFER_USAGE_CPU_READ_OFTEN | AHARDWAREBUFFER_USAGE_CPU_WRITE_OFTEN | AHARDWAREBUFFER_USAGE_GPU_DATA_BUFFER, 0, 0, 0};
+    if (AHardwareBuffer_allocate(&d, &s->ahb)) { free(s); return NULL; }
+    int sv[2], fds[16], nfd = -1;
+    if (!socketpair(AF_UNIX, SOCK_SEQPACKET | SOCK_CLOEXEC, 0, sv)) {
+        if (!AHardwareBuffer_sendHandleToUnixSocket(s->ahb, sv[0])) nfd = recv_fds(sv[1], fds, 16);
+        close(sv[0]); close(sv[1]);
+    }
+    if (nfd >= 1) { s->fd = fds[0]; for (int i = 1; i < nfd; i++) close(fds[i]); }
+    s->map = s->fd >= 0 ? mmap(NULL, size, PROT_READ | PROT_WRITE, MAP_SHARED, s->fd, 0) : MAP_FAILED;
+    VkAndroidHardwareBufferPropertiesANDROID ap = {VK_STRUCTURE_TYPE_ANDROID_HARDWARE_BUFFER_PROPERTIES_ANDROID};
+    VkExternalMemoryBufferCreateInfo eb = {VK_STRUCTURE_TYPE_EXTERNAL_MEMORY_BUFFER_CREATE_INFO, NULL, VK_EXTERNAL_MEMORY_HANDLE_TYPE_ANDROID_HARDWARE_BUFFER_BIT_ANDROID};
+    VkBufferCreateInfo bi = {VK_STRUCTURE_TYPE_BUFFER_CREATE_INFO, &eb, 0, size, POOL_USAGE, VK_SHARING_MODE_EXCLUSIVE};
+    int ok = s->map != MAP_FAILED && !vkGetAndroidHardwareBufferPropertiesANDROID(V.dev, s->ahb, &ap) && !vkCreateBuffer(V.dev, &bi, NULL, &s->buf);
+    if (ok) {
+        VkMemoryDedicatedAllocateInfo ded = {VK_STRUCTURE_TYPE_MEMORY_DEDICATED_ALLOCATE_INFO, NULL, VK_NULL_HANDLE, s->buf};
+        VkImportAndroidHardwareBufferInfoANDROID imp = {VK_STRUCTURE_TYPE_IMPORT_ANDROID_HARDWARE_BUFFER_INFO_ANDROID, &ded, s->ahb};
+        VkMemoryAllocateInfo ai = {VK_STRUCTURE_TYPE_MEMORY_ALLOCATE_INFO, &imp, ap.allocationSize, vk_mem_type(ap.memoryTypeBits, 0, 0)};
+        ok = !vkAllocateMemory(V.dev, &ai, NULL, &s->mem);
+        if (ok && vkBindBufferMemory(V.dev, s->buf, s->mem, 0)) { vkFreeMemory(V.dev, s->mem, NULL); ok = 0; }
+        if (!ok) vkDestroyBuffer(V.dev, s->buf, NULL);
+    }
+    if (!ok) {
+        static int said; if (!said++) VKLOG("[RED] memory pool slab of %llu KB could not be made: small pools get hardware buffers of their own", (unsigned long long)(size >> 10));
+        if (s->map != MAP_FAILED) munmap(s->map, size); if (s->fd >= 0) close(s->fd); AHardwareBuffer_release(s->ahb); free(s); return NULL;
+    }
+    for (uint32_t i = 0; i < n; i++) s->bits[i >> 6] |= 1ull << (i & 63);
+    return s;
+}
+static int slab_take(uint64_t size, slab_t **out, uint32_t *slot) {   // 1: a slot of at least size bytes
+    if (!slab_on() || size > SLAB_POOL_MAX) return 0;
+    uint64_t pages = (size + 4095) >> 12; int c = 0; while (c < SLAB_NCLS && SLAB_PAGES[c] < pages) c++;
+    if (c == SLAB_NCLS) return 0;
+    uint64_t done = vk_fence_done();
+    for (int pass = 0; pass < 2; pass++) {
+        pthread_mutex_lock(&g_slab_mu);
+        for (slab_t *s = g_slab[c]; s; s = s->next) {
+            if (!s->nfree) continue;
+            for (uint32_t w = 0; w < (s->nslot + 63) / 64; w++) for (uint64_t b = s->bits[w]; b; b &= b - 1) {
+                uint32_t i = w * 64 + (uint32_t)__builtin_ctzll(b); if (s->fence[i] > done) continue;
+                s->bits[w] &= ~(1ull << (i & 63)); s->nfree--; g_slab_used++; pthread_mutex_unlock(&g_slab_mu); *out = s; *slot = i; return 1;
+            }
+        }
+        pthread_mutex_unlock(&g_slab_mu);
+        if (pass) break;
+        slab_t *s = slab_new(c); if (!s) return 0;   // every slot taken or still the GPU's: a new slab, made outside the lock
+        pthread_mutex_lock(&g_slab_mu); s->next = g_slab[c]; g_slab[c] = s; g_slab_bytes += s->slot_bytes * s->nslot; pthread_mutex_unlock(&g_slab_mu);
+    }
+    return 0;
+}
+static void slab_give(slab_t *s, uint32_t i, uint64_t fence) {
+    pthread_mutex_lock(&g_slab_mu); s->fence[i] = fence; s->bits[i >> 6] |= 1ull << (i & 63); s->nfree++; pthread_mutex_unlock(&g_slab_mu);
+}
+// Zero copy: the pages of [mem, mem+size) become an AHardwareBuffer's, imported as a VkBuffer (a slab's slot for a small pool, or a kept buffer of a freed pool of that size). 0 on success
 static int pool_zero_copy(vkpool_t *p, uint8_t *mem, uint64_t size) {
+    slab_t *sl; uint32_t si;
+    if (slab_take(size, &sl, &si)) {
+        uint64_t off = (uint64_t)si * sl->slot_bytes;
+        memcpy(sl->map + off, mem, size);
+        if (mmap(mem, size, PROT_READ | PROT_WRITE, MAP_SHARED | MAP_FIXED, sl->fd, (off_t)off) == mem) {
+            p->buf = sl->buf; p->mem = VK_NULL_HANDLE; p->ahb = NULL; p->boff = off; p->slab = sl; p->slot = si; p->zero_copy = 1; return 0; }
+        mem_diag_zc(11, "mmap-fixed slab", size, "errno", errno); slab_give(sl, si, 0);   // (the anonymous pages are still there: a buffer of its own)
+    }
     AHardwareBuffer_Desc d = {(uint32_t)size, 1, 1, AHARDWAREBUFFER_FORMAT_BLOB,
         AHARDWAREBUFFER_USAGE_CPU_READ_OFTEN | AHARDWAREBUFFER_USAGE_CPU_WRITE_OFTEN | AHARDWAREBUFFER_USAGE_GPU_DATA_BUFFER, 0, 0, 0};
     if (size > 0xffffffffull) { mem_diag_zc(0, "size", size, "limit", -1); return -1; }
-    AHardwareBuffer *ahb; int ar = AHardwareBuffer_allocate(&d, &ahb);
+    zcfree_t re; int reuse = zcf_take(size, &re);
+    AHardwareBuffer *ahb = reuse ? re.ahb : NULL; int ar = reuse ? 0 : AHardwareBuffer_allocate(&d, &ahb);
     if (ar) { mem_diag_zc(1, "AHardwareBuffer_allocate", size, "return", ar); return -1; }
+#define ZC_DROP() do { if (reuse) zcf_free_now(&re); else AHardwareBuffer_release(ahb); } while (0)
     int sv[2]; if (socketpair(AF_UNIX, SOCK_SEQPACKET | SOCK_CLOEXEC, 0, sv)) {
-        mem_diag_zc(2, "socketpair", size, "errno", errno); AHardwareBuffer_release(ahb); return -1; }
+        mem_diag_zc(2, "socketpair", size, "errno", errno); ZC_DROP(); return -1; }
     int fds[16], nfd = -1;
     ar = AHardwareBuffer_sendHandleToUnixSocket(ahb, sv[0]);
     if (!ar) { nfd = recv_fds(sv[1], fds, 16); if (nfd < 1) mem_diag_zc(4, "recv_fds", size, "return", nfd); }
     else mem_diag_zc(3, "AHardwareBuffer_sendHandleToUnixSocket", size, "return", ar);
     close(sv[0]); close(sv[1]);
-    if (nfd < 1) { AHardwareBuffer_release(ahb); return -1; }
+    if (nfd < 1) { ZC_DROP(); return -1; }
     // copy the pool's current contents into the buffer through a temporary mapping, then put the buffer's pages at the pool's address
     uint8_t *tmp = mmap(NULL, size, PROT_READ | PROT_WRITE, MAP_SHARED, fds[0], 0);
     int ok = tmp != MAP_FAILED;
@@ -403,7 +509,9 @@ static int pool_zero_copy(vkpool_t *p, uint8_t *mem, uint64_t size) {
         if (!ok) mem_diag_zc(6, "mmap-fixed", size, "errno", errno);
     } else mem_diag_zc(5, "mmap-temporary", size, "errno", errno);
     for (int i = 0; i < nfd; i++) close(fds[i]);
-    if (!ok) { AHardwareBuffer_release(ahb); return -1; }
+    if (!ok) { ZC_DROP(); return -1; }
+#undef ZC_DROP
+    if (reuse) { p->buf = re.buf; p->mem = re.mem; p->ahb = ahb; p->zero_copy = 1; return 0; }   // imported already
     VkAndroidHardwareBufferPropertiesANDROID ap = {VK_STRUCTURE_TYPE_ANDROID_HARDWARE_BUFFER_PROPERTIES_ANDROID};
     VkExternalMemoryBufferCreateInfo eb = {VK_STRUCTURE_TYPE_EXTERNAL_MEMORY_BUFFER_CREATE_INFO, NULL, VK_EXTERNAL_MEMORY_HANDLE_TYPE_ANDROID_HARDWARE_BUFFER_BIT_ANDROID};
     VkBufferCreateInfo bi = {VK_STRUCTURE_TYPE_BUFFER_CREATE_INFO, &eb, 0, size, POOL_USAGE, VK_SHARING_MODE_EXCLUSIVE};
@@ -421,28 +529,86 @@ static int pool_zero_copy(vkpool_t *p, uint8_t *mem, uint64_t size) {
     p->ahb = ahb; p->zero_copy = 1;
     return 0;
 }
-// A zero-copy pool's dma-buf mapped again over [mem, mem+len) in one piece per chunk, read-only (nvn_dirty_defrag: the mappings its protection split never merge). 0 = done
+// Pools inside pools. A game may make a pool over memory that lies inside another of its pools: Kirby and the Forgotten Land keeps its resource heap (1.4 GB) in one
+// pool, loads each model file into it and makes a small pool over the file's vertex data, and its movie player's textures come and go the same way. The inner pool's pages
+// are its own buffer's while it lives, and the outer buffer's again when it goes (pool_copy_back): left as anonymous memory, they were no longer the outer buffer's, and
+// the next vk_pool_remap_ro of the outer pool put the buffer's pages back there with what they held when the inner pool was made. The game then found files it had loaded
+// since in an older state (a model file relocated twice, or not relocated after ResCast: a hang in the SDK's relocation loop, crashes at main+0x506c30 and others, each
+// shortly after a movie, whose frames' uploads bring the mprotect count to the defragmenting's threshold). A live inner pool lost its pages the same way, so the outer
+// pool is mapped again only around them.
+// g_nest_mu: an inner pool is made (its pages mapped, then the entry added) and dropped (the entry removed, then its pages given back) as one step against the outer
+// pool's remap. Taken before g_pool_mu; nothing waits on the dirty-page tracking under it (nvn_dirty_defrag calls the remap with its pages busy)
+static pthread_mutex_t g_nest_mu = PTHREAD_MUTEX_INITIALIZER;
+static int pool_within(const vkpool_t *q, const vkpool_t *p) {   // q: a chunk of a zero-copy pool that overlaps p and belongs to a smaller pool than p's
+    return q->zero_copy && q->base != p->base && q->end - q->base < p->end - p->base && q->lo < p->hi && q->hi > p->lo;
+}
+// The dma-buf behind a zero-copy pool's pages, whose offset p->boff is p->lo's: a slab's file, or the hardware buffer's (*own: the caller closes it). -1: none
+static int pool_fd(const vkpool_t *p, int *own) {
+    *own = 0;
+    if (!p->zero_copy) return -1;
+    if (p->slab) return ((slab_t *)p->slab)->fd;
+    int sv[2], fds[16], nfd = -1; if (!p->ahb || socketpair(AF_UNIX, SOCK_SEQPACKET | SOCK_CLOEXEC, 0, sv)) return -1;
+    if (!AHardwareBuffer_sendHandleToUnixSocket(p->ahb, sv[0])) nfd = recv_fds(sv[1], fds, 16);
+    close(sv[0]); close(sv[1]);
+    for (int k = 1; k < nfd; k++) close(fds[k]);
+    if (nfd < 1) return -1;
+    *own = 1; return fds[0];
+}
+// A zero-copy pool's dma-buf mapped again over [mem, mem+len) in one piece per chunk, read-only (nvn_dirty_defrag: the mappings its protection split never merge), but for
+// the pools inside it, whose pages stay their own. 0 = done
 int vk_pool_remap_ro(void *mem, size_t len) {
     int rc = 0; uint64_t done = 0;
+    pthread_mutex_lock(&g_nest_mu);
     pthread_rwlock_rdlock(&g_pool_mu);
     for (int i = 0; i < g_npool && !rc; i++) {
         vkpool_t *p = &g_pool[i]; if (p->base != (uint64_t)(uintptr_t)mem || p->end - p->base != len) continue;
         if (!p->zero_copy) { if (!p->shadow) { rc = -1; break; } done += p->hi - p->lo; continue; }   // a copied pool: nothing to map again (its protection stays as it is), and done, so defrag stops taking its pages busy
-        int sv[2], fds[16], nfd = -1; if (socketpair(AF_UNIX, SOCK_SEQPACKET | SOCK_CLOEXEC, 0, sv)) { rc = -1; break; }
-        if (!AHardwareBuffer_sendHandleToUnixSocket(p->ahb, sv[0])) nfd = recv_fds(sv[1], fds, 16);
-        close(sv[0]); close(sv[1]);
-        void *at = (void *)(uintptr_t)p->lo; rc = nfd >= 1 && mmap(at, p->hi - p->lo, PROT_READ, MAP_SHARED | MAP_FIXED, fds[0], 0) == at ? 0 : -1;
-        for (int k = 0; k < nfd; k++) close(fds[k]);
+        int own, fd = pool_fd(p, &own); if (fd < 0) { rc = -1; break; }
+        for (uint64_t a = p->lo; a < p->hi && !rc; ) {   // [a, lo): the piece up to the next inner pool [lo, hi)
+            uint64_t lo = p->hi, hi = p->hi;
+            for (int j = 0; j < g_npool; j++) {
+                const vkpool_t *q = &g_pool[j]; if (!pool_within(q, p) || q->hi <= a) continue;
+                uint64_t ql = q->lo > a ? q->lo : a, qh = q->hi < p->hi ? q->hi : p->hi;
+                if (ql < lo) { lo = ql; hi = qh; } else if (ql == lo && qh > hi) hi = qh;
+            }
+            if (lo > a) { void *at = (void *)(uintptr_t)a; rc = mmap(at, lo - a, PROT_READ, MAP_SHARED | MAP_FIXED, fd, (off_t)(a - p->lo + p->boff)) == at ? 0 : -1; }
+            a = hi;
+        }
+        if (own) close(fd);
         if (!rc) done += p->hi - p->lo;
     }
     pthread_rwlock_unlock(&g_pool_mu);
+    pthread_mutex_unlock(&g_nest_mu);
     return !rc && done == len ? 0 : -1;
 }
-static void pool_copy_back(vkpool_t *p) {   // the pages go back to anonymous memory with the buffer's contents (the game may reuse the memory)
-    uint64_t size = p->hi - p->lo; uint8_t *mem = (uint8_t *)(uintptr_t)p->lo;
-    uint8_t *save = malloc(size); if (save) memcpy(save, mem, size);
-    mmap(mem, size, PROT_READ | PROT_WRITE, MAP_PRIVATE | MAP_ANONYMOUS | MAP_FIXED, -1, 0);
-    if (save) { memcpy(mem, save, size); free(save); }
+// A pool that goes: its pages take the buffer's contents with them (the game may reuse the memory), as the pages of the pool they lie inside (see "Pools inside pools":
+// written into that pool's buffer first, then mapped from it, so the bytes are there at every moment) or else as anonymous memory. p has left the table
+static void pool_copy_back(vkpool_t *p) {
+    for (uint64_t a = p->lo; a < p->hi; ) {
+        uint8_t *mem = (uint8_t *)(uintptr_t)a; uint64_t e = p->hi, next = p->hi; int fd = -1, own = 0; off_t off = 0;
+        pthread_rwlock_rdlock(&g_pool_mu);
+        const vkpool_t *o = NULL;   // the smallest pool around a
+        for (int j = 0; j < g_npool; j++) {
+            const vkpool_t *q = &g_pool[j]; if (!pool_within(p, q)) continue;
+            if (q->lo > a) { if (q->lo < next) next = q->lo; }
+            else if (q->hi > a && (!o || q->end - q->base < o->end - o->base)) o = q;
+        }
+        if (o) { if (o->hi < e) e = o->hi; fd = pool_fd(o, &own); off = (off_t)(a - o->lo + o->boff); } else e = next;
+        pthread_rwlock_unlock(&g_pool_mu);
+        uint64_t n = e - a; int ok = 0;
+        if (fd >= 0) {
+            uint8_t *tmp = mmap(NULL, n, PROT_READ | PROT_WRITE, MAP_SHARED, fd, off);
+            if (tmp != MAP_FAILED) { memcpy(tmp, mem, n); munmap(tmp, n); ok = mmap(mem, n, PROT_READ | PROT_WRITE, MAP_SHARED | MAP_FIXED, fd, off) == mem; }
+            if (own) close(fd);
+            if (!ok) { static int said; if (!said++) VKLOG("[RED] memory pool %p +%#llx inside another pool: its pages could not go back to that pool's buffer (errno %d): anonymous memory, which the outer pool's next remap replaces", (void *)mem, (unsigned long long)n, errno); }
+        }
+        if (!ok) {
+            uint8_t *save = malloc(n); if (save) memcpy(save, mem, n);
+            mmap(mem, n, PROT_READ | PROT_WRITE, MAP_PRIVATE | MAP_ANONYMOUS | MAP_FIXED, -1, 0);
+            if (save) { memcpy(mem, save, n); free(save); }
+        }
+        a = e;
+    }
 }
 // Pools over ZC_CHUNK are made of chunks of at most that size, each a pool entry with an AHardwareBuffer of its own: the Adreno 830's gralloc allocator service
 // (vendor.qti.hardware.display.allocator-service, snapalloc) aborts on a BLOB of 812 MB ("ubsan: mul-overflow" in SnapConstraintManager::AlignmentToAlignedConstraints),
@@ -459,11 +625,41 @@ void mtl_pool_add(const void *mem, uint64_t size) {
     for (uint64_t o = 0; o < size; o += c) pool_add_one((const uint8_t *)mem + o, size - o < c ? size - o : c, a, a + size);
     if (size > c) VKLOG("memory pool %p +%#llx: %llu chunks of at most %#llx", mem, (unsigned long long)size, (unsigned long long)((size + c - 1) / c), c);
 }
+// The pool line: pools made and dropped with their time on the calling threads and the reuse counts, at most once a second and only for a second in which
+// pools took 20 ms or more (loads): "memory pools in the last 1.0 s: 212 made (148.0 MB, 640.0 ms; 150 from kept buffers), 180 dropped (...)"
+static uint64_t pool_ns(void) { struct timespec t; clock_gettime(CLOCK_MONOTONIC, &t); return (uint64_t)t.tv_sec * 1000000000ull + (uint64_t)t.tv_nsec; }
+static pthread_mutex_t g_pn_mu = PTHREAD_MUTEX_INITIALIZER; static uint64_t g_pn_t0, g_pn_n[2], g_pn_b[2], g_pn_ns[2], g_pn_hit0, g_pn_slab0;
+static void pool_note(int kind, uint64_t bytes, uint64_t ns) {   // kind 0: made, 1: dropped (lock order: g_pn_mu, then g_zcf_mu or g_slab_mu)
+    uint64_t now = pool_ns(); char b[400] = "";
+    pthread_mutex_lock(&g_pn_mu);
+    if (!g_pn_t0) g_pn_t0 = now;
+    g_pn_n[kind]++; g_pn_b[kind] += bytes; g_pn_ns[kind] += ns;
+    if (now - g_pn_t0 >= 1000000000ull) {
+        pthread_mutex_lock(&g_zcf_mu); uint64_t hit = g_zcf_hit, kn = (uint64_t)g_nzcf, kb = g_zcf_bytes; pthread_mutex_unlock(&g_zcf_mu);
+        pthread_mutex_lock(&g_slab_mu); uint64_t su = g_slab_used, sbytes = g_slab_bytes; pthread_mutex_unlock(&g_slab_mu);
+        if (g_pn_ns[0] + g_pn_ns[1] >= 20000000ull)
+            snprintf(b, sizeof b, "memory pools in the last %.1f s: %llu made (%.1f MB, %.1f ms; %llu in slab slots, %llu from kept buffers), %llu dropped (%.1f MB, %.1f ms); slabs %.1f MB, %llu buffers kept (%.1f MB)",
+                     (now - g_pn_t0) / 1e9, (unsigned long long)g_pn_n[0], g_pn_b[0] / 1048576.0, g_pn_ns[0] / 1e6, (unsigned long long)(su - g_pn_slab0), (unsigned long long)(hit - g_pn_hit0),
+                     (unsigned long long)g_pn_n[1], g_pn_b[1] / 1048576.0, g_pn_ns[1] / 1e6, sbytes / 1048576.0, (unsigned long long)kn, kb / 1048576.0);
+        g_pn_t0 = now; g_pn_hit0 = hit; g_pn_slab0 = su; memset(g_pn_n, 0, sizeof g_pn_n); memset(g_pn_b, 0, sizeof g_pn_b); memset(g_pn_ns, 0, sizeof g_pn_ns);
+    }
+    pthread_mutex_unlock(&g_pn_mu);
+    if (*b) VKLOG("%s", b);
+}
+// The pool's buffer is made before the write lock is taken, and the entry only put in under it: the hardware buffer (a binder call to the allocator service), the copy
+// into it and the driver's import take milliseconds each, and every lookup waits on the lock (vk_pool_of: each buffer binding of each draw on the replay thread, and the
+// game threads' mtl_addr, once a pool was added or removed). Pokémon Scarlet makes and drops pools on three threads at once while a thrown ball flies (its capture assets,
+// ~180 MB read in 1.5 s): the replay thread stood almost still for a second with the GPU idle (simpleperf), in frames of 100-580 ms
 static void pool_add_one(const void *mem, uint64_t size, uint64_t base, uint64_t end) {
-    pthread_rwlock_wrlock(&g_pool_mu);
-    if (g_npool == MAXPOOL) { pthread_rwlock_unlock(&g_pool_mu); die("[vk] too many memory pools"); }
-    vkpool_t *p = &g_pool[g_npool]; memset(p, 0, sizeof *p);
-    p->lo = (uint64_t)(uintptr_t)mem; p->hi = p->lo + size; p->base = base; p->end = end; { static uint64_t ser; p->serial = ++ser; }
+    uint64_t t0 = pool_ns();
+    vkpool_t q, *p = &q; memset(p, 0, sizeof *p);
+    p->lo = (uint64_t)(uintptr_t)mem; p->hi = p->lo + size; p->base = base; p->end = end;
+    int inner = 0;   // inside another pool: made as one step against that pool's remap (see "Pools inside pools")
+    pthread_mutex_lock(&g_nest_mu);
+    pthread_rwlock_rdlock(&g_pool_mu);
+    for (int j = 0; j < g_npool && !inner; j++) inner = g_pool[j].zero_copy && g_pool[j].base != base && g_pool[j].lo < p->hi && g_pool[j].hi > p->lo;
+    pthread_rwlock_unlock(&g_pool_mu);
+    if (!inner) pthread_mutex_unlock(&g_nest_mu);
     int zc = ((uintptr_t)mem & 0xfff) || (size & 0xfff) ? -3 : getenv("DM_VK_NO_ZEROCOPY") ? -4 : zc_over(end - base) ? -5 : pool_zero_copy(p, (uint8_t *)mem, size);
     if (zc) {
         static int said; if (!said++) VKLOG("[RED] memory pool %p +%#llx could not be zero-copy (%d): a GPU copy is refreshed before each submission (slow)", mem, (unsigned long long)size, zc);
@@ -476,24 +672,39 @@ static void pool_add_one(const void *mem, uint64_t size, uint64_t base, uint64_t
             VKCHK(pool_copied_alloc(p, size, 0));
         }
     }
-    pool_ord_insert(g_npool++); __atomic_fetch_add(&g_pool_gen, 1, __ATOMIC_RELEASE);
+    pthread_rwlock_wrlock(&g_pool_mu);
+    if (g_npool == MAXPOOL) { pthread_rwlock_unlock(&g_pool_mu); die("[vk] too many memory pools"); }
+    { static uint64_t ser; p->serial = ++ser; }
+    g_pool[g_npool] = q; pool_ord_insert(g_npool++); __atomic_fetch_add(&g_pool_gen, 1, __ATOMIC_RELEASE);
     int np = g_npool;
     pthread_rwlock_unlock(&g_pool_mu);
+    if (inner) pthread_mutex_unlock(&g_nest_mu);
     if (np >= 1024 && !(np & (np - 1))) VKLOG("%d memory pools live", np);
     static uint64_t zc_bytes, cp_bytes; if (zc) cp_bytes += size; else zc_bytes += size;
     static int nlog; if (nlog++ < 24) VKLOG("memory pool %p +%#llx: %s (zero-copy %.1f MB, copied %.1f MB)", mem, (unsigned long long)size, zc ? "copied" : "zero-copy", zc_bytes / 1048576.0, cp_bytes / 1048576.0);
+    pool_note(0, size, pool_ns() - t0);
 }
 void mtl_pool_del(const void *mem) {
     for (;;) {   // every chunk of the pool
+        pthread_mutex_lock(&g_nest_mu);
         pthread_rwlock_wrlock(&g_pool_mu);
         int i = 0; while (i < g_npool && g_pool[i].base != (uint64_t)(uintptr_t)mem) i++;
-        if (i == g_npool) { pthread_rwlock_unlock(&g_pool_mu); return; }
+        if (i == g_npool) { pthread_rwlock_unlock(&g_pool_mu); pthread_mutex_unlock(&g_nest_mu); return; }
         vkpool_t p = g_pool[i]; g_pool[i] = g_pool[--g_npool]; pool_ord_remove(i); __atomic_fetch_add(&g_pool_gen, 1, __ATOMIC_RELEASE);
+        int inner = 0; for (int j = 0; j < g_npool && !inner; j++) inner = p.zero_copy && pool_within(&p, &g_pool[j]);   // its pages go back to the pool around it, as one step against that pool's remap
         pthread_rwlock_unlock(&g_pool_mu);
+        if (!inner) pthread_mutex_unlock(&g_nest_mu);
+        uint64_t t0 = pool_ns();
         if (p.zero_copy) pool_copy_back(&p);
+        if (inner) pthread_mutex_unlock(&g_nest_mu);
         free(p.baseline);
-        vk_defer_free_buffer(p.buf, p.mem);   // the AHardwareBuffer goes with the imported memory's last reference
-        if (p.ahb) AHardwareBuffer_release(p.ahb);
+        { void vk_tbuf_drop_pool(uint64_t); vk_tbuf_drop_pool(p.serial); }   // the texel buffer views over its buffer (gfx_vk_tex.c), before the buffer itself goes or is kept
+        if (p.slab) slab_give(p.slab, p.slot, mtl_last_fence() + 1);   // the slot goes back to its slab (the GPU may still read it until that submission is done)
+        else if (!(p.zero_copy && p.ahb && zcf_put(p.ahb, p.buf, p.mem, p.hi - p.lo))) {   // (kept for the next pool of its size)
+            vk_defer_free_buffer(p.buf, p.mem);   // the AHardwareBuffer goes with the imported memory's last reference
+            if (p.ahb) AHardwareBuffer_release(p.ahb);
+        }
+        pool_note(1, p.hi - p.lo, pool_ns() - t0);
     }
 }
 vkpool_t *vk_pool_of(uint64_t addr, uint64_t len) {
@@ -518,7 +729,7 @@ uint32_t vk_pool_gen(void) { return __atomic_load_n(&g_pool_gen, __ATOMIC_ACQUIR
 int vk_buf_at(uint64_t addr, uint64_t len, VkBuffer *buf, VkDeviceSize *off) {
     vkpool_t *p = vk_pool_of(addr, len ? len : 1);
     if (!p) return 0;
-    *buf = p->buf; *off = addr - p->lo; return 1;
+    *buf = p->buf; *off = addr - p->lo + p->boff; return 1;
 }
 int mtl_addr(uint64_t addr, uint64_t len, void **buf, uint64_t *off) {
     vkpool_t *p = vk_pool_of(addr, len ? len : 1);
@@ -623,6 +834,7 @@ struct vksub {
 };
 enum { GW_SUB = 64 };
 static vksub_t g_slot[NSLOT]; static int g_cur = -1; uint64_t g_cmd_gen;   // g_cmd_gen: main command buffers begun (gfx_vk_exec.c bind cache)
+static pthread_mutex_t g_df_mu = PTHREAD_MUTEX_INITIALIZER;   // the slots' deferred-free lists (df, ndf, capdf): df_add says why
 static uint64_t pool_merge_back(vkpool_t *p, uint64_t lo, uint64_t hi) {
     int diag = mem_diag_on(); uint64_t t = diag ? mem_diag_ns() : 0;
     uint64_t bytes = 0;
@@ -754,15 +966,16 @@ static int g_prereset = -1;
 static void slot_recycle(vksub_t *s) {   // the GPU has passed this slot's last submission: free what it held, rewind its allocators
     if (g_prereset < 0) { const char *e = getenv("DM_VK_X_NOPRERESET"); g_prereset = !(e && atoi(e)); }
     if (g_prereset) mtl_wait(s->fence, ~0ull); else wait_fence(s->fence);
-    for (int i = 0; i < s->ndf; i++) {
-        dfree_t *d = &s->df[i];
+    pthread_mutex_lock(&g_df_mu); dfree_t *df = s->df; int ndf = s->ndf; s->df = NULL; s->ndf = s->capdf = 0; pthread_mutex_unlock(&g_df_mu);   // the list taken whole: a game thread may add to it meanwhile
+    for (int i = 0; i < ndf; i++) {
+        dfree_t *d = &df[i];
         if (d->kind == 0) { vkDestroyBuffer(V.dev, (VkBuffer)d->a, NULL); if (d->b) vkFreeMemory(V.dev, (VkDeviceMemory)d->b, NULL); }
         else if (d->kind == 1) { vkDestroyImage(V.dev, (VkImage)d->a, NULL); if (d->b) vkFreeMemory(V.dev, (VkDeviceMemory)d->b, NULL); }
         else if (d->kind == 4) { void img_sub_free_(void *); vkDestroyImage(V.dev, (VkImage)d->a, NULL); img_sub_free_(d->b); }
         else if (d->kind == 2) vkDestroyImageView(V.dev, (VkImageView)d->a, NULL);
         else if (d->kind == 3) vkDestroyBufferView(V.dev, (VkBufferView)d->a, NULL);
     }
-    s->ndf = 0;
+    free(df);
     for (int i = 0; i < s->nblk; i++) s->blk[i].used = 0;
     for (int i = 0; i < s->ndp; i++) vkResetDescriptorPool(V.dev, s->dp[i], 0);
     s->dp_cur = 0; s->dp_counted = -1;
@@ -864,18 +1077,25 @@ void *vk_scratch(VkDeviceSize n, VkDeviceSize align, VkBuffer *buf, VkDeviceSize
     void *m; VKCHK(vkMapMemory(V.dev, b->m, 0, VK_WHOLE_SIZE, 0, &m)); b->p = m;
     b->used = n; *buf = b->b; *off = 0; return b->p;
 }
+// The deferred frees have a lock of their own: the replay thread adds to its slot's list while it records (holding g_sub_lock for the whole submission), and a game
+// thread that finalizes a pool (nvnMemoryPoolFinalize → mtl_pool_del) adds to the same list without g_sub_lock. Unlocked, two first adds to a recycled slot crashed
+// Animal Crossing: New Horizons' release build (SIGSEGV in df_add: one thread had set capdf, the other wrote through the df still NULL). g_df_mu is above slot_recycle
 static void df_add(int kind, void *a, void *b) {
-    if (g_cur < 0) {   // outside a submission (a pool finalized between frames): after everything submitted so far
+    pthread_mutex_lock(&g_df_mu);
+    if (g_cur >= 0) {
+        vksub_t *s = &g_slot[g_cur]; if (s->ndf == s->capdf) { s->capdf = s->capdf ? 2 * s->capdf : 64; s->df = realloc(s->df, s->capdf * sizeof *s->df); }
+        s->df[s->ndf++] = (dfree_t){kind, a, b};
+        pthread_mutex_unlock(&g_df_mu); return;
+    }
+    pthread_mutex_unlock(&g_df_mu);
+    {   // outside a submission (a pool finalized between frames): after everything submitted so far
         wait_fence(g_fence);
         if (kind == 0) { vkDestroyBuffer(V.dev, (VkBuffer)a, NULL); if (b) vkFreeMemory(V.dev, (VkDeviceMemory)b, NULL); }
         else if (kind == 1) { vkDestroyImage(V.dev, (VkImage)a, NULL); if (b) vkFreeMemory(V.dev, (VkDeviceMemory)b, NULL); }
         else if (kind == 4) { void img_sub_free_(void *); vkDestroyImage(V.dev, (VkImage)a, NULL); img_sub_free_(b); }
         else if (kind == 2) vkDestroyImageView(V.dev, (VkImageView)a, NULL);
         else vkDestroyBufferView(V.dev, (VkBufferView)a, NULL);
-        return;
     }
-    vksub_t *s = cur(); if (s->ndf == s->capdf) { s->capdf = s->capdf ? 2 * s->capdf : 64; s->df = realloc(s->df, s->capdf * sizeof *s->df); }
-    s->df[s->ndf++] = (dfree_t){kind, a, b};
 }
 // Image memory. Small images share blocks: each allocation the driver makes is a mapping of the process (Adreno maps them all), and a game with thousands of textures
 // ran towards the kernel's per-process mapping limit (Xenoblade Chronicles 3: about 9,400 driver mappings in its first area, 2,216 of them 172 KB). Images up to
@@ -929,7 +1149,8 @@ static nvn_hmap g_dsl_need = {.klen = sizeof(VkDescriptorSetLayout)}; static pth
 void vk_dsl_register(VkDescriptorSetLayout l, const VkDescriptorSetLayoutBinding *b, uint32_t n) {   // what one set of this layout takes, by type
     uint32_t *need = calloc(9, sizeof *need);
     for (uint32_t i = 0; i < n; i++) if ((uint32_t)b[i].descriptorType < 9) need[b[i].descriptorType] += b[i].descriptorCount;
-    pthread_mutex_lock(&g_dsl_mu); nvn_hm_put(&g_dsl_need, &l, need); pthread_mutex_unlock(&g_dsl_mu);
+    pthread_mutex_lock(&g_dsl_mu); uint32_t *old = nvn_hm_put(&g_dsl_need, &l, need); pthread_mutex_unlock(&g_dsl_mu);
+    free(old);   // (a non-dispatchable handle may be the same value for two identical layouts: the counts are the same, the older array goes)
 }
 VkDescriptorSet vk_alloc_set(VkDescriptorSetLayout l) {
     vksub_t *s = cur();

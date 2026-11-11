@@ -39,13 +39,17 @@ class BCUpload(unittest.TestCase):
 #define VKRED_ONCE(id, ...) abort()
 static void die(const char *f, ...) { va_list a; va_start(a, f); vfprintf(stderr, f, a); va_end(a); abort(); }
 static struct { int has_bc, has_astc; VkPhysicalDevice pd; } V;
-typedef struct { uint64_t serial; nvn_texdesc d; nvn_texlayout L; const uint8_t *mem; } tex_t;
+typedef struct { uint64_t serial; nvn_texdesc d; nvn_texlayout L; const uint8_t *mem; void *pool; } tex_t;
 ''' + fmt + image + formats + readback + r'''
 void vkGetPhysicalDeviceFormatProperties(VkPhysicalDevice p, VkFormat f, VkFormatProperties *o) { (void)p; (void)f; memset(o, 0, sizeof *o); }
 static unsigned calls, layer, level, test_linear, uploads; static uint8_t expected[32][8];
 static void *scratch; static size_t scratch_size;
 static VkCommandBuffer vk_upload_cmd(void) { return (VkCommandBuffer)1; }
 static void vk_tex_prepare(VkCommandBuffer cb, vkimg_t *im) { (void)cb; im->layout = VK_IMAGE_LAYOUT_GENERAL; }
+static int sparse_tex(const tex_t *t) { (void)t; return 0; }
+static uint64_t nvn_sparse_gen(void) { return 0; }
+static void nvn_sparse_protect(void *p, uint64_t a, uint64_t n) { (void)p; (void)a; (void)n; assert(0); }
+static uint64_t nvn_sparse_copy(void *p, void *d, uint64_t a, uint64_t n) { (void)p; (void)d; (void)a; (void)n; assert(0); return 0; }
 static void nvn_dirty_protect(const void *p, size_t n) { (void)p; (void)n; }
 static uint64_t nvn_dirty_now(void) { return 77; }
 static const void *nvn_dirty_span(const void *p, size_t n) { (void)n; return p; }

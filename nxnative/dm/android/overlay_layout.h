@@ -19,8 +19,8 @@ int dm_overlay_layout(void);   // front_android.c: 0 the tablet's, 1 the phone's
 #define OV_KNOB 0.42f        // a stick's knob radius, of the stick's (the theme-less drawing)
 #define OV_MENU_ALPHA 0.70f
 #define OV_FLASH_NS 180000000ll   // a pressed button's flash fades to its held glow in this time
-// front_android.c → gfx_vk_present.c: what to draw (0 nothing: a controller is attached, and its keys open the menu; 1 the gamepad; 2 only the menu
-// button: the player hid the gamepad, or keys came from a device not counted as a controller), where a stick's knob is (its offset from the stick's centre
+// front_android.c → gfx_vk_present.c: what to draw (0 nothing; 1 the gamepad; 2 only the menu button). Show gamepad decides between 1 and 2 even with a
+// controller attached. Where a stick's knob is (its offset from the stick's centre
 // in stick radii, -1..1), and when each control was pressed (0 = not held; for the d-pad, its four directions by DM_BTN_* bit; a stick: while a finger holds it)
 int dm_overlay_visible(void);
 void dm_overlay_knob(int stick, float *dx, float *dy);
@@ -107,11 +107,12 @@ void dm_overlay_theme_done(const ov_theme *t);   // the pixels are on the GPU: t
 
 // ---- the pause menu: a panel in the middle of the window: a row of tabs, the open tab's rows, and Resume. Everything is placed in a panel rectangle p
 // (x, y, width, height: the window's for touches, the raster's for drawing), so the touches and the drawing agree ----
-enum { OVM_OVERLAY, OVM_OPACITY, OVM_EDIT, OVM_RUMBLE, OVM_FPS, OVM_MODE, OVM_EXPORT, OVM_IMPORT, OVM_RESUME, OVM_TAB, OVM_N };   // OVM_TAB: the tabs' row;
-            // OVM_EDIT: the layout editor; OVM_MODE: handheld (performance) or docked (resolution); OVM_EXPORT, OVM_IMPORT: the save manager (saves_android.c)
+enum { OVM_OVERLAY, OVM_OPACITY, OVM_EDIT, OVM_RUMBLE, OVM_FPS, OVM_MODE, OVM_EXPORT, OVM_IMPORT, OVM_PAD, OVM_RESUME, OVM_TAB, OVM_N };   // OVM_TAB: the tabs' row;
+            // OVM_EDIT: the layout editor; OVM_MODE: handheld (performance) or docked (resolution); OVM_EXPORT, OVM_IMPORT: the save manager (saves_android.c);
+            // OVM_PAD: a controller's face buttons by their position or by their label (front_android.c pad_labels)
 #define OVM_TABS 2
-#define OVM_PER_TAB 4
-static const int OVM_TAB_ITEMS[OVM_TABS][OVM_PER_TAB] = {{OVM_OVERLAY, OVM_OPACITY, OVM_EDIT, OVM_RUMBLE}, {OVM_FPS, OVM_MODE, OVM_EXPORT, OVM_IMPORT}};
+#define OVM_PER_TAB 5
+static const int OVM_TAB_ITEMS[OVM_TABS][OVM_PER_TAB] = {{OVM_OVERLAY, OVM_OPACITY, OVM_EDIT, OVM_RUMBLE, OVM_PAD}, {OVM_FPS, OVM_MODE, OVM_EXPORT, OVM_IMPORT, -1}};   // -1: no row
 static const char *const OVM_TAB_NAMES[OVM_TABS] = {"Gamepad", "Game"};
 #define OVM_ROWS (OVM_PER_TAB + 2)   // the tabs, a tab's rows (as many for every tab: the panel keeps its size), Resume
 static inline int ov_menu_item(int tab, int row) { return row == 0 ? OVM_TAB : row == OVM_ROWS - 1 ? OVM_RESUME : row > 0 && row < OVM_ROWS - 1 ? OVM_TAB_ITEMS[tab & 1][row - 1] : -1; }
