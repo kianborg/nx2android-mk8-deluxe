@@ -116,8 +116,8 @@ def host_hash(apk, marker=MARKER):
     return hashlib.sha256(data).hexdigest()
 
 
-def settings(installed, previous, cpu, gpu_readback=False):
-    forced = {'DM_VK_DRIVER': DRIVER, 'DM_VK_X_BC_CPU': str(int(cpu)),
+def settings(installed, previous, cpu, gpu_readback=False, system_driver=False):
+    forced = {'DM_VK_DRIVER': None if system_driver else DRIVER, 'DM_VK_X_BC_CPU': str(int(cpu)),
               'DM_VK_X_BC_GPU_READBACK': str(int(gpu_readback)), 'DM_VK_BC_DECODE': '0', 'DM_VK_NOPCACHE': '1'}
     def key(row):
         row = row.strip()
@@ -129,16 +129,16 @@ def settings(installed, previous, cpu, gpu_readback=False):
             rows.append(row)
             present.add(key(row))
     rows = [row for row in rows if key(row) not in forced]
-    return '\n'.join(rows + [f'{k}={v}' for k, v in forced.items()]) + '\n'
+    return '\n'.join(rows + [f'{k}={v}' for k, v in forced.items() if v is not None]) + '\n'
 
 
-def configure(adb, work, cpu, previous=None, gpu_readback=False, *, package=PACKAGE, label=LABEL):
+def configure(adb, work, cpu, previous=None, gpu_readback=False, *, package=PACKAGE, label=LABEL, system_driver=False):
     remote = f'/sdcard/Android/data/{package}/files/env.txt'
     adb.shell(shlex.join(['am', 'force-stop', package]))
     installed = adb.run('exec-out', 'cat', remote)
     backup = Path(tempfile.mkdtemp(prefix='settings-', dir=work))
     (backup / 'env-before.txt').write_text(installed)
-    result = settings(installed, previous, cpu, gpu_readback)
+    result = settings(installed, previous, cpu, gpu_readback, system_driver)
     local = backup / 'env-test.txt'
     local.write_text(result, encoding='utf-8', newline='\n')
     temporary = remote + '.pr-test.tmp'
@@ -146,7 +146,8 @@ def configure(adb, work, cpu, previous=None, gpu_readback=False, *, package=PACK
     adb.shell(shlex.join(['mv', '-f', temporary, remote]))
     if adb.run('exec-out', 'cat', remote).replace('\r\n', '\n') != result:
         raise ValueError(f'Settings verification failed. Backup: {backup}')
-    print(f'Configured {label}, mode: {"CPU BC test" if cpu else "native BC baseline"}.')
+    print(f'Configured {label}, BC selection: {"forced CPU" if cpu else "automatic (check the runtime log)"}.')
+    print(f'Vulkan driver: {"system" if system_driver else "bundled Turnip"}')
     print(f'GPU snapshots: {"on" if gpu_readback else "off"}')
     print(f'Settings backup: {backup}')
 
@@ -161,11 +162,14 @@ def main():
     p.add_argument('--device')
     p.add_argument('--jobs', type=int, default=2)
     p.add_argument('--cpu-bc', action='store_true', help='build the separate MK8 CPU BC Test app; default builds the native-BC baseline app')
+    p.add_argument('--lenovo', action='store_true', help='Lenovo Idea Tab 5G: system Vulkan, no Turnip ZIP, automatic BC selection in a separate test app')
     p.add_argument('--upstream-baseline', action='store_true', help='build a separate unchanged-upstream app with CPU BC forced and GPU readback off')
     p.add_argument('--gpu-readback', action='store_true', help='opt into ordered snapshots in the CPU BC test app')
     p.add_argument('--configure-only', type=Path, help='work folder from a previous build; verify that app and change its readback setting without rebuilding')
     args = p.parse_args()
     try:
+        if args.lenovo:
+            args.cpu_bc = True
         package = UPSTREAM_PACKAGE if args.upstream_baseline else CPU_PACKAGE if args.cpu_bc else PACKAGE
         dependencies()
         if args.configure_only:
@@ -182,14 +186,19 @@ def main():
             if receipt.get('commit') != commit:
                 raise ValueError('This receipt uses an older PR runtime. Rebuild before testing the review changes.')
             repo = Path(receipt['source'])
+            system_driver = args.lenovo or receipt.get('system_driver', False)
+            cpu = False if args.lenovo else receipt.get('force_cpu', cpu)
         else:
             label, commit, repository, cpu, marker = PROFILES[package]
+            system_driver = args.lenovo
+            if args.lenovo:
+                cpu = False
             if args.gpu_readback and package != CPU_PACKAGE:
                 raise ValueError('--gpu-readback requires --cpu-bc and is unavailable in the upstream baseline')
             game = args.game_folder.expanduser().resolve()
             keys = args.keys.expanduser().resolve()
             driver = args.driver.expanduser().resolve()
-            if not game.is_dir() or not keys.is_file() or not driver.is_file() or args.jobs < 1:
+            if not game.is_dir() or not keys.is_file() or (not system_driver and not driver.is_file()) or args.jobs < 1:
                 raise ValueError('Check --game-folder, --keys, --driver and --jobs')
             work = Path(tempfile.mkdtemp(prefix='mk8-pr-test-', dir=game))
             print(f'Work folder: {work}', flush=True)
@@ -216,13 +225,15 @@ def main():
                 adb.run('pull', base, str(apk), timeout=120)
                 if host_hash(apk, marker) != receipt['host_sha256']:
                     raise ValueError('Installed runtime differs from this PR build; settings were not changed')
-            configure(adb, work, cpu, gpu_readback=args.gpu_readback, package=package, label=label)
+            configure(adb, work, cpu, gpu_readback=args.gpu_readback, package=package, label=label, system_driver=system_driver)
             return
-        library = driver_library(driver, work)
+        library = None if system_driver else driver_library(driver, work)
         output = work / 'port'
         command = [sys.executable, '-m', 'porter', 'port', str(game), '-k', str(keys),
                    '--experimental', '--package', package, '--app-name', label,
-                   '--jobs', str(args.jobs), '--vulkan-driver', str(library), '-o', str(output)]
+                   '--jobs', str(args.jobs), '-o', str(output)]
+        if library:
+            command += ['--vulkan-driver', str(library)]
         subprocess.run(command, cwd=repo, check=True)
         manifests = list(output.glob('*-data/nx2a-data.json'))
         if len(manifests) != 1 or json.loads(manifests[0].read_text()).get('package') != package:
@@ -237,22 +248,25 @@ def main():
         if previous is not None:
             (work / 'env-before-install.txt').write_text(previous)
         (work / 'build.json').write_text(json.dumps({'commit': commit, 'source': str(repo),
+            'system_driver': system_driver, 'force_cpu': cpu,
             'apk': str(apk), 'host_sha256': sha, 'device': serial, 'package': package}, indent=2) + '\n')
         subprocess.run([sys.executable, '-m', 'porter', 'install', str(data), '--apk', str(apk),
                         '--device', serial], cwd=repo, check=True)
-        configure(adb, work, cpu, previous, args.gpu_readback, package=package, label=label)
+        configure(adb, work, cpu, previous, args.gpu_readback, package=package, label=label, system_driver=system_driver)
         print('APK:', apk)
         print(f'Open {label}. It has separate saves and settings from the working app.')
         if package == UPSTREAM_PACKAGE:
-            print(f'Unchanged upstream {commit[:7]}: CPU BC enabled, GPU readback off.')
+            print(f'Unchanged upstream {commit[:7]}: BC {"forced CPU" if cpu else "automatic"}, GPU readback off.')
             print('Compare the same scene with MK8 CPU BC Test, with readback off in both apps.')
-        elif cpu:
+        elif package == CPU_PACKAGE:
             print('Enable GPU readback for this CPU BC app without rebuilding:')
             print(shlex.join([sys.executable, str(Path(__file__).resolve()), '--configure-only', str(work), '--gpu-readback']))
-            print('Omit --gpu-readback to turn readback off; CPU BC stays enabled in this app.')
+            print('Omit --gpu-readback to turn readback off; driver and BC selection stay unchanged.')
         else:
             print('Build the separate CPU BC app by running this helper again with --cpu-bc.')
         print('The isolated branch lacks other MK8 fixes from the full fork. A failed CPU-mode launch alone does not prove a regression in this PR.')
+        if system_driver:
+            print('Confirm the log says "BC no (decoded on the CPU)" before reporting native CPU-fallback coverage.')
     except (OSError, ValueError, KeyError, ModuleNotFoundError, zipfile.BadZipFile, subprocess.CalledProcessError, adb_error) as error:
         p.exit(1, f'Error: {error}\n')
 

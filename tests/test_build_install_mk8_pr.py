@@ -63,7 +63,14 @@ class PRBuilder(unittest.TestCase):
     def test_upstream_cpu_baseline_install_and_identity(self):
         self.exercise_app(True, baseline=True)
 
-    def exercise_app(self, cpu, baseline=False):
+    def test_lenovo_system_driver_and_automatic_bc(self):
+        self.exercise_app(True, lenovo=True)
+
+    def test_lenovo_upstream_baseline(self):
+        self.exercise_app(True, baseline=True, lenovo=True)
+
+    def exercise_app(self, cpu, baseline=False, lenovo=False):
+        force_cpu = cpu and not lenovo
         package = tool.UPSTREAM_PACKAGE if baseline else tool.CPU_PACKAGE if cpu else tool.PACKAGE
         label, commit, repository, _, marker = tool.PROFILES[package]
         with tempfile.TemporaryDirectory() as tmp:
@@ -76,7 +83,8 @@ class PRBuilder(unittest.TestCase):
             elf = bytearray(64)
             elf[:6] = b'\x7fELF\x02\x01'
             struct.pack_into('<HH', elf, 16, 3, 183)
-            driver.write_bytes(elf)
+            if not lenovo:
+                driver.write_bytes(elf)
             working = game / 'MarioKart8Deluxe.apk'
             working.write_bytes(b'working APK must remain')
             repo = root / 'isolated-source'
@@ -93,8 +101,11 @@ class PRBuilder(unittest.TestCase):
                 if command[3] == 'port':
                     self.assertEqual(command[command.index('--package') + 1], package)
                     self.assertEqual(command[command.index('--app-name') + 1], label)
-                    library = Path(command[command.index('--vulkan-driver') + 1])
-                    self.assertEqual(library.name, tool.DRIVER)
+                    if lenovo:
+                        self.assertNotIn('--vulkan-driver', command)
+                    else:
+                        library = Path(command[command.index('--vulkan-driver') + 1])
+                        self.assertEqual(library.name, tool.DRIVER)
                     out = Path(command[command.index('-o') + 1])
                     data = out / 'MarioKart8Deluxe-data'
                     data.mkdir(parents=True)
@@ -107,6 +118,8 @@ class PRBuilder(unittest.TestCase):
             arguments = ['helper', '--game-folder', str(game), '--keys', str(keys), '--driver', str(driver)]
             if cpu:
                 arguments.append('--cpu-bc')
+            if lenovo:
+                arguments.append('--lenovo')
             if baseline:
                 arguments.append('--upstream-baseline')
             old_path = list(sys.path)
@@ -121,7 +134,7 @@ class PRBuilder(unittest.TestCase):
                         tool.main()
                     work = next(game.glob('mk8-pr-test-*'))
                     source.assert_called_once_with(work, commit, repository, ordered=not baseline)
-                    self.assertIn(f'DM_VK_X_BC_CPU={int(cpu)}', phone.env)
+                    self.assertIn(f'DM_VK_X_BC_CPU={int(force_cpu)}', phone.env)
                     self.assertIn('DM_VK_X_BC_GPU_READBACK=0', phone.env)
                     self.assertIn('DM_LANG=en-US', phone.env)
                     self.assertIn('NEW_DEFAULT=1', phone.env)
@@ -140,16 +153,22 @@ class PRBuilder(unittest.TestCase):
                     options = ['--gpu-readback'] if readback else []
                     with patch.object(sys, 'argv', ['helper', '--configure-only', str(work), *options]):
                         tool.main()
-                    self.assertIn(f'DM_VK_X_BC_CPU={int(cpu)}', phone.env)
+                    self.assertIn(f'DM_VK_X_BC_CPU={int(force_cpu)}', phone.env)
                     self.assertIn(f'DM_VK_X_BC_GPU_READBACK={int(readback)}', phone.env)
                     if cpu:
                         with patch.object(sys, 'argv', ['helper', '--configure-only', str(work)]):
                             tool.main()
-                        self.assertIn('DM_VK_X_BC_CPU=1', phone.env)
+                        self.assertIn(f'DM_VK_X_BC_CPU={int(force_cpu)}', phone.env)
                         self.assertIn('DM_VK_X_BC_GPU_READBACK=0', phone.env)
                     receipt = json.loads((work / 'build.json').read_text())
                     self.assertEqual(receipt['package'], package)
                     self.assertEqual(receipt['commit'], commit)
+                    self.assertEqual(receipt['force_cpu'], force_cpu)
+                    self.assertEqual(receipt['system_driver'], lenovo)
+                    if lenovo:
+                        self.assertNotIn('DM_VK_DRIVER=', phone.env)
+                    else:
+                        self.assertIn('DM_VK_DRIVER=' + tool.DRIVER, phone.env)
                     self.assertEqual(len(commands), 2)  # no rebuild/reinstall for mode switch
                     working_package = 'org.nx2a.t0100152000022000'
                     for call in phone.calls:
