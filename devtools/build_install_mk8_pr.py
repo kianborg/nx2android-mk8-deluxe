@@ -15,7 +15,7 @@ import tempfile
 import urllib.request
 import zipfile
 
-COMMIT = '7fc39e262279f5f023239a6febc11d36a04457f9'
+COMMIT = '308a672078e0ec5850acb23945f8ad05a4f4929c'
 PACKAGE = 'org.nx2a.t0100152000022000.prtest'
 LABEL = 'MK8 PR Test'
 REMOTE = f'/sdcard/Android/data/{PACKAGE}/files/env.txt'
@@ -104,7 +104,7 @@ def host_hash(apk):
 
 def settings(installed, previous, cpu, gpu_readback=False):
     forced = {'DM_VK_DRIVER': DRIVER, 'DM_VK_X_BC_CPU': str(int(cpu)),
-              'DM_VK_BC_GPU_READBACK': str(int(gpu_readback)), 'DM_VK_BC_DECODE': '0', 'DM_VK_NOPCACHE': '1'}
+              'DM_VK_X_BC_GPU_READBACK': str(int(gpu_readback)), 'DM_VK_BC_DECODE': '0', 'DM_VK_NOPCACHE': '1'}
     def key(row):
         row = row.strip()
         return row.split('=', 1)[0].strip() if '=' in row and not row.startswith('#') else None
