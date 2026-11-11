@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Build/install the isolated BC-upload PR, then switch between baseline and CPU BC."""
+"""Build/install separate native and CPU BC test apps for the isolated upload PR."""
 import argparse
 import hashlib
 import importlib
@@ -18,9 +18,20 @@ import zipfile
 COMMIT = '308a672078e0ec5850acb23945f8ad05a4f4929c'
 PACKAGE = 'org.nx2a.t0100152000022000.prtest'
 LABEL = 'MK8 PR Test'
-REMOTE = f'/sdcard/Android/data/{PACKAGE}/files/env.txt'
+CPU_PACKAGE = PACKAGE + '.cpubc'
+CPU_LABEL = 'MK8 CPU BC Test'
+UPSTREAM_PACKAGE = PACKAGE + '.cpubaseline'
+UPSTREAM_LABEL = 'MK8 CPU BC Baseline'
+UPSTREAM_COMMIT = '5e4ea3b5953944163987ecc2752258e551c3ba06'
 DRIVER = 'libmk8_pr_turnip.so'
 MARKER = b'BC buffer readback allocation failed'
+BASELINE_MARKER = b'copy of a BC texture decoded on the CPU into a buffer: skipped'
+# label, source commit, repository, forced CPU decoding, expected host marker
+PROFILES = {
+    PACKAGE: (LABEL, COMMIT, 'kianborg/nx2android-mk8-deluxe', False, MARKER),
+    CPU_PACKAGE: (CPU_LABEL, COMMIT, 'kianborg/nx2android-mk8-deluxe', True, MARKER),
+    UPSTREAM_PACKAGE: (UPSTREAM_LABEL, UPSTREAM_COMMIT, 'shirai91/nx2android', True, BASELINE_MARKER),
+}
 
 
 def dependencies():
@@ -42,10 +53,10 @@ def dependencies():
                          shlex.join([sys.executable, '-m', 'pip', 'install', *missing]))
 
 
-def source(work):
+def source(work, commit=COMMIT, repository='kianborg/nx2android-mk8-deluxe', ordered=True):
     archive = work / 'source.zip'
-    url = f'https://github.com/kianborg/nx2android-mk8-deluxe/archive/{COMMIT}.zip'
-    print(f'Downloading isolated PR source {COMMIT[:7]}...', flush=True)
+    url = f'https://github.com/{repository}/archive/{commit}.zip'
+    print(f'Downloading {repository} at {commit[:7]}...', flush=True)
     with urllib.request.urlopen(url, timeout=120) as response, archive.open('wb') as out:
         shutil.copyfileobj(response, out)
     root = work / 'source'
@@ -66,8 +77,9 @@ def source(work):
     if len(roots) != 1:
         raise ValueError('Unexpected PR source layout')
     code = (roots[0] / 'nxnative/dm/android/gfx_vk_exec.c').read_text()
-    if 'vk_buffer_snapshot(src, src_off, size, blocks)' not in code:
-        raise ValueError('Downloaded source lacks the ordered BC upload')
+    has_ordered = 'vk_buffer_snapshot(src, src_off, size, blocks)' in code
+    if has_ordered != ordered or BASELINE_MARKER.decode() not in code:
+        raise ValueError('Downloaded source does not match the selected BC upload profile')
     return roots[0]
 
 
@@ -91,14 +103,16 @@ def driver_library(path, work):
     return out
 
 
-def host_hash(apk):
+def host_hash(apk, marker=MARKER):
     with zipfile.ZipFile(apk) as z:
         entry = z.getinfo('lib/arm64-v8a/libdmhost.so')
         if entry.file_size > 128 * 1024**2:
             raise ValueError('Native host is too large')
         data = z.read(entry)
-    if MARKER not in data:
-        raise ValueError('APK lacks the ordered BC upload code; installation/settings stopped')
+    if marker not in data:
+        raise ValueError('APK lacks the selected BC upload code; installation/settings stopped')
+    if marker == BASELINE_MARKER and MARKER in data:
+        raise ValueError('Baseline APK contains the PR upload code; installation/settings stopped')
     return hashlib.sha256(data).hexdigest()
 
 
@@ -118,20 +132,21 @@ def settings(installed, previous, cpu, gpu_readback=False):
     return '\n'.join(rows + [f'{k}={v}' for k, v in forced.items()]) + '\n'
 
 
-def configure(adb, work, cpu, previous=None, gpu_readback=False):
-    adb.shell(shlex.join(['am', 'force-stop', PACKAGE]))
-    installed = adb.run('exec-out', 'cat', REMOTE)
+def configure(adb, work, cpu, previous=None, gpu_readback=False, *, package=PACKAGE, label=LABEL):
+    remote = f'/sdcard/Android/data/{package}/files/env.txt'
+    adb.shell(shlex.join(['am', 'force-stop', package]))
+    installed = adb.run('exec-out', 'cat', remote)
     backup = Path(tempfile.mkdtemp(prefix='settings-', dir=work))
     (backup / 'env-before.txt').write_text(installed)
     result = settings(installed, previous, cpu, gpu_readback)
     local = backup / 'env-test.txt'
     local.write_text(result, encoding='utf-8', newline='\n')
-    temporary = REMOTE + '.pr-test.tmp'
+    temporary = remote + '.pr-test.tmp'
     adb.push_file(local, temporary)
-    adb.shell(shlex.join(['mv', '-f', temporary, REMOTE]))
-    if adb.run('exec-out', 'cat', REMOTE).replace('\r\n', '\n') != result:
+    adb.shell(shlex.join(['mv', '-f', temporary, remote]))
+    if adb.run('exec-out', 'cat', remote).replace('\r\n', '\n') != result:
         raise ValueError(f'Settings verification failed. Backup: {backup}')
-    print(f'Configured {LABEL}, mode: {"CPU BC test" if cpu else "native BC baseline"}.')
+    print(f'Configured {label}, mode: {"CPU BC test" if cpu else "native BC baseline"}.')
     print(f'GPU snapshots: {"on" if gpu_readback else "off"}')
     print(f'Settings backup: {backup}')
 
@@ -145,23 +160,32 @@ def main():
     p.add_argument('--driver', type=Path, default=home / 'Downloads/turnip_v24.3.0_R9v2.zip')
     p.add_argument('--device')
     p.add_argument('--jobs', type=int, default=2)
-    p.add_argument('--cpu-bc', action='store_true', help='force the CPU fallback to exercise the PR; default is a native-BC baseline')
-    p.add_argument('--gpu-readback', action='store_true', help='opt into ordered snapshots; requires --cpu-bc')
-    p.add_argument('--configure-only', type=Path, help='work folder printed by a previous build; verify the installed host and switch mode without rebuilding')
+    p.add_argument('--cpu-bc', action='store_true', help='build the separate MK8 CPU BC Test app; default builds the native-BC baseline app')
+    p.add_argument('--upstream-baseline', action='store_true', help='build a separate unchanged-upstream app with CPU BC forced and GPU readback off')
+    p.add_argument('--gpu-readback', action='store_true', help='opt into ordered snapshots in the CPU BC test app')
+    p.add_argument('--configure-only', type=Path, help='work folder from a previous build; verify that app and change its readback setting without rebuilding')
     args = p.parse_args()
     try:
-        if args.gpu_readback and not args.cpu_bc:
-            raise ValueError('--gpu-readback requires --cpu-bc for this test workflow')
+        package = UPSTREAM_PACKAGE if args.upstream_baseline else CPU_PACKAGE if args.cpu_bc else PACKAGE
         dependencies()
         if args.configure_only:
             work = args.configure_only.expanduser().resolve()
             receipt = json.loads((work / 'build.json').read_text())
-            if receipt.get('package') != PACKAGE:
+            if receipt.get('package') not in PROFILES:
                 raise ValueError('This receipt is not for the separate PR test app. Run a new build with this helper.')
-            if receipt.get('commit') != COMMIT:
+            package = receipt['package']
+            if args.upstream_baseline and package != UPSTREAM_PACKAGE:
+                raise ValueError('This receipt is not for the upstream CPU baseline. Build it with --upstream-baseline first.')
+            if args.cpu_bc and package == PACKAGE:
+                raise ValueError('This is a native BC app receipt. Build again with --cpu-bc to install the separate CPU BC app.')
+            label, commit, repository, cpu, marker = PROFILES[package]
+            if receipt.get('commit') != commit:
                 raise ValueError('This receipt uses an older PR runtime. Rebuild before testing the review changes.')
             repo = Path(receipt['source'])
         else:
+            label, commit, repository, cpu, marker = PROFILES[package]
+            if args.gpu_readback and package != CPU_PACKAGE:
+                raise ValueError('--gpu-readback requires --cpu-bc and is unavailable in the upstream baseline')
             game = args.game_folder.expanduser().resolve()
             keys = args.keys.expanduser().resolve()
             driver = args.driver.expanduser().resolve()
@@ -169,7 +193,10 @@ def main():
                 raise ValueError('Check --game-folder, --keys, --driver and --jobs')
             work = Path(tempfile.mkdtemp(prefix='mk8-pr-test-', dir=game))
             print(f'Work folder: {work}', flush=True)
-            repo = source(work)
+            repo = source(work, commit, repository, ordered=package != UPSTREAM_PACKAGE)
+        if args.gpu_readback and package != CPU_PACKAGE:
+            raise ValueError('--gpu-readback requires the CPU BC PR test app')
+        remote = f'/sdcard/Android/data/{package}/files/env.txt'
         sys.path.insert(0, str(repo))
         from porter import config, toolchain
         from porter.adb import Adb, AdbError
@@ -180,44 +207,51 @@ def main():
         if args.configure_only:
             if serial != receipt['device']:
                 raise ValueError('Select the same phone used for this build with --device')
-            paths = adb.shell(shlex.join(['pm', 'path', PACKAGE])).splitlines()
+            paths = adb.shell(shlex.join(['pm', 'path', package])).splitlines()
             base = next((s[len('package:'):] for s in paths if s.startswith('package:') and s.endswith('/base.apk')), None)
             if not base:
                 raise ValueError('Installed base APK not found')
             with tempfile.TemporaryDirectory() as tmp:
                 apk = Path(tmp) / 'base.apk'
                 adb.run('pull', base, str(apk), timeout=120)
-                if host_hash(apk) != receipt['host_sha256']:
+                if host_hash(apk, marker) != receipt['host_sha256']:
                     raise ValueError('Installed runtime differs from this PR build; settings were not changed')
-            configure(adb, work, args.cpu_bc, gpu_readback=args.gpu_readback)
+            configure(adb, work, cpu, gpu_readback=args.gpu_readback, package=package, label=label)
             return
         library = driver_library(driver, work)
         output = work / 'port'
         command = [sys.executable, '-m', 'porter', 'port', str(game), '-k', str(keys),
-                   '--experimental', '--package', PACKAGE, '--app-name', LABEL,
+                   '--experimental', '--package', package, '--app-name', label,
                    '--jobs', str(args.jobs), '--vulkan-driver', str(library), '-o', str(output)]
         subprocess.run(command, cwd=repo, check=True)
         manifests = list(output.glob('*-data/nx2a-data.json'))
-        if len(manifests) != 1 or json.loads(manifests[0].read_text()).get('package') != PACKAGE:
+        if len(manifests) != 1 or json.loads(manifests[0].read_text()).get('package') != package:
             raise ValueError('Unexpected built data pack')
         data = manifests[0].parent
         apk = output / (data.name.removesuffix('-data') + '.apk')
-        sha = host_hash(apk)
-        exists = adb.shell(f'if [ -f {shlex.quote(REMOTE)} ]; then printf yes; else printf no; fi').strip()
+        sha = host_hash(apk, marker)
+        exists = adb.shell(f'if [ -f {shlex.quote(remote)} ]; then printf yes; else printf no; fi').strip()
         if exists not in ('yes', 'no'):
             raise ValueError('Could not check existing phone settings')
-        previous = adb.run('exec-out', 'cat', REMOTE) if exists == 'yes' else None
+        previous = adb.run('exec-out', 'cat', remote) if exists == 'yes' else None
         if previous is not None:
             (work / 'env-before-install.txt').write_text(previous)
-        (work / 'build.json').write_text(json.dumps({'commit': COMMIT, 'source': str(repo),
-            'apk': str(apk), 'host_sha256': sha, 'device': serial, 'package': PACKAGE}, indent=2) + '\n')
+        (work / 'build.json').write_text(json.dumps({'commit': commit, 'source': str(repo),
+            'apk': str(apk), 'host_sha256': sha, 'device': serial, 'package': package}, indent=2) + '\n')
         subprocess.run([sys.executable, '-m', 'porter', 'install', str(data), '--apk', str(apk),
                         '--device', serial], cwd=repo, check=True)
-        configure(adb, work, args.cpu_bc, previous, args.gpu_readback)
+        configure(adb, work, cpu, previous, args.gpu_readback, package=package, label=label)
         print('APK:', apk)
-        print(f'Open {LABEL}. It has separate saves and settings from the working app.')
-        print('Switch to CPU BC without rebuilding:')
-        print(shlex.join([sys.executable, str(Path(__file__).resolve()), '--configure-only', str(work), '--cpu-bc', '--gpu-readback']))
+        print(f'Open {label}. It has separate saves and settings from the working app.')
+        if package == UPSTREAM_PACKAGE:
+            print(f'Unchanged upstream {commit[:7]}: CPU BC enabled, GPU readback off.')
+            print('Compare the same scene with MK8 CPU BC Test, with readback off in both apps.')
+        elif cpu:
+            print('Enable GPU readback for this CPU BC app without rebuilding:')
+            print(shlex.join([sys.executable, str(Path(__file__).resolve()), '--configure-only', str(work), '--gpu-readback']))
+            print('Omit --gpu-readback to turn readback off; CPU BC stays enabled in this app.')
+        else:
+            print('Build the separate CPU BC app by running this helper again with --cpu-bc.')
         print('The isolated branch lacks other MK8 fixes from the full fork. A failed CPU-mode launch alone does not prove a regression in this PR.')
     except (OSError, ValueError, KeyError, ModuleNotFoundError, zipfile.BadZipFile, subprocess.CalledProcessError, adb_error) as error:
         p.exit(1, f'Error: {error}\n')

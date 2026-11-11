@@ -49,11 +49,23 @@ class Phone:
         raise AssertionError(args)
 
     def push_file(self, local, remote):
+        self.calls.append(('push', str(local), remote))
         self.pending = local.read_text()
 
 
 class PRBuilder(unittest.TestCase):
-    def test_build_install_switch_and_refuse_different_runtime(self):
+    def test_native_app_install_and_identity(self):
+        self.exercise_app(False)
+
+    def test_cpu_app_install_and_identity(self):
+        self.exercise_app(True)
+
+    def test_upstream_cpu_baseline_install_and_identity(self):
+        self.exercise_app(True, baseline=True)
+
+    def exercise_app(self, cpu, baseline=False):
+        package = tool.UPSTREAM_PACKAGE if baseline else tool.CPU_PACKAGE if cpu else tool.PACKAGE
+        label, commit, repository, _, marker = tool.PROFILES[package]
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)
             game = root / 'game'
@@ -70,6 +82,7 @@ class PRBuilder(unittest.TestCase):
             repo = root / 'isolated-source'
             repo.mkdir()
             phone = Phone()
+            phone.host = marker
             commands = []
 
             def run(command, cwd, check):
@@ -78,23 +91,27 @@ class PRBuilder(unittest.TestCase):
                 self.assertNotIn('--replace-signer', command)
                 commands.append(command)
                 if command[3] == 'port':
-                    self.assertEqual(command[command.index('--package') + 1], tool.PACKAGE)
-                    self.assertEqual(command[command.index('--app-name') + 1], 'MK8 PR Test')
+                    self.assertEqual(command[command.index('--package') + 1], package)
+                    self.assertEqual(command[command.index('--app-name') + 1], label)
                     library = Path(command[command.index('--vulkan-driver') + 1])
                     self.assertEqual(library.name, tool.DRIVER)
                     out = Path(command[command.index('-o') + 1])
                     data = out / 'MarioKart8Deluxe-data'
                     data.mkdir(parents=True)
-                    (data / 'nx2a-data.json').write_text(json.dumps({'package': tool.PACKAGE}))
-                    apk(out / 'MarioKart8Deluxe.apk')
+                    (data / 'nx2a-data.json').write_text(json.dumps({'package': package}))
+                    apk(out / 'MarioKart8Deluxe.apk', marker)
                 else:
                     self.assertEqual(command[3], 'install')
                     phone.env = 'DM_VK_DRIVER=libmk8_pr_turnip.so\nNEW_DEFAULT=1\n'
 
             arguments = ['helper', '--game-folder', str(game), '--keys', str(keys), '--driver', str(driver)]
+            if cpu:
+                arguments.append('--cpu-bc')
+            if baseline:
+                arguments.append('--upstream-baseline')
             old_path = list(sys.path)
             try:
-                with patch.object(tool, 'source', return_value=repo), \
+                with patch.object(tool, 'source', return_value=repo) as source, \
                      patch.object(tool, 'dependencies'), \
                      patch.object(tool.subprocess, 'run', side_effect=run), \
                      patch('porter.adb.Adb', return_value=phone), \
@@ -103,25 +120,50 @@ class PRBuilder(unittest.TestCase):
                     with patch.object(sys, 'argv', arguments):
                         tool.main()
                     work = next(game.glob('mk8-pr-test-*'))
-                    self.assertIn('DM_VK_X_BC_CPU=0', phone.env)
+                    source.assert_called_once_with(work, commit, repository, ordered=not baseline)
+                    self.assertIn(f'DM_VK_X_BC_CPU={int(cpu)}', phone.env)
                     self.assertIn('DM_VK_X_BC_GPU_READBACK=0', phone.env)
                     self.assertIn('DM_LANG=en-US', phone.env)
                     self.assertIn('NEW_DEFAULT=1', phone.env)
                     self.assertNotIn('DM_VK_DRIVER=turnip', phone.env)
                     self.assertEqual((work / 'env-before-install.txt').read_text().splitlines()[-1], 'DM_VK_BC_DECODE=1')
                     self.assertEqual(working.read_bytes(), b'working APK must remain')
-                    with patch.object(sys, 'argv', ['helper', '--configure-only', str(work), '--cpu-bc', '--gpu-readback']):
+                    if not cpu:
+                        with patch.object(sys, 'argv', ['helper', '--configure-only', str(work), '--cpu-bc']):
+                            with self.assertRaises(SystemExit):
+                                tool.main()
+                    if baseline:
+                        with patch.object(sys, 'argv', ['helper', '--configure-only', str(work), '--gpu-readback']):
+                            with self.assertRaises(SystemExit):
+                                tool.main()
+                    readback = cpu and not baseline
+                    options = ['--gpu-readback'] if readback else []
+                    with patch.object(sys, 'argv', ['helper', '--configure-only', str(work), *options]):
                         tool.main()
-                    self.assertIn('DM_VK_X_BC_CPU=1', phone.env)
-                    self.assertIn('DM_VK_X_BC_GPU_READBACK=1', phone.env)
+                    self.assertIn(f'DM_VK_X_BC_CPU={int(cpu)}', phone.env)
+                    self.assertIn(f'DM_VK_X_BC_GPU_READBACK={int(readback)}', phone.env)
+                    if cpu:
+                        with patch.object(sys, 'argv', ['helper', '--configure-only', str(work)]):
+                            tool.main()
+                        self.assertIn('DM_VK_X_BC_CPU=1', phone.env)
+                        self.assertIn('DM_VK_X_BC_GPU_READBACK=0', phone.env)
+                    receipt = json.loads((work / 'build.json').read_text())
+                    self.assertEqual(receipt['package'], package)
+                    self.assertEqual(receipt['commit'], commit)
                     self.assertEqual(len(commands), 2)  # no rebuild/reinstall for mode switch
                     working_package = 'org.nx2a.t0100152000022000'
                     for call in phone.calls:
                         text = call if isinstance(call, str) else ' '.join(map(str, call))
                         self.assertNotIn(working_package + '/files', text)
+                        for other_package in set(tool.PROFILES) - {package}:
+                            self.assertNotIn(other_package + '/files', text)
+                            self.assertNotIn('force-stop ' + other_package + '\n', text + '\n')
+                            self.assertNotIn('pm path ' + other_package + '\n', text + '\n')
+                        if isinstance(call, tuple) and call[:2] == ('exec-out', 'cat'):
+                            self.assertEqual(call[2], f'/sdcard/Android/data/{package}/files/env.txt')
                         self.assertNotIn('force-stop ' + working_package + '\n', text + '\n')
                         self.assertNotIn('pm path ' + working_package + '\n', text + '\n')
-                    phone.host = tool.MARKER + b'different host'
+                    phone.host = marker + b'different host'
                     before = phone.env
                     with patch.object(sys, 'argv', ['helper', '--configure-only', str(work)]):
                         with self.assertRaises(SystemExit):
