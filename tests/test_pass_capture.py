@@ -11,7 +11,7 @@ class PassCapture(unittest.TestCase):
         cc = shutil.which('cc')
         if not cc:
             self.skipTest('C compiler required')
-        source = (Path(__file__).resolve().parents[1]/'nxnative/dm/android/gfx_vk_exec.c').read_text()
+        source = (Path(__file__).resolve().parents[1]/'nxnative/dm/android/gfx_vk_exec.c').read_text(encoding='utf-8')
         function = 'static void pass_dump(void) {' + source.split('static void pass_dump(void) {', 1)[1].split('\nstatic void texdump_flush(void) {', 1)[0]
         harness = r'''
 #include <stdint.h>
@@ -23,7 +23,8 @@ typedef struct {int bc_decode;} vkfmt_t;
 static const vkfmt_t *vk_fmt(int f) {(void)f;return NULL;}
 static struct {int rt_has_col[8],rt_has_cview[8]; struct {int set_format,format;} rt_cview[8];
  struct {struct {int format;} d;} rt_col[8];int cfmt[8],ncol;unsigned pass_w,pass_h;} S;
-static uint64_t g_pd_shader;
+static uint64_t g_pd_shader,g_prev_fs;
+static int g_pass_draws;
 static int g_pd_match,g_pd_state=1,g_pd_skip,g_sub_pass=19;
 static char g_pd_size[128],g_pd_from[32];
 typedef struct {unsigned layers,levels,w,h;int fmt;} vkimg_t;
@@ -55,12 +56,17 @@ int main(void) {
  vkimg_t im={.layers=1,.levels=1};g_pd_inputs[1]=g_pd_inputs[2]=&im;g_pd_inputs_mask=6;
  pass_dump();assert(input_count==2);
  im.layers=2;pass_dump();assert(input_count==2);
+ // The upstream fragment-shader filter composes with the existing selector.
+ targets=depths=0;setenv("DM_VK_PASSDUMP_FS","abcd,1234",1);
+ g_prev_fs=0xbeef;g_pass_draws=1;pass_dump();assert(!targets && !depths);
+ g_prev_fs=0x1234;g_pass_draws=0;pass_dump();assert(!targets && !depths);
+ g_pass_draws=1;pass_dump();assert(targets==2 && depths==1);
  return 0;
 }
 '''
         with tempfile.TemporaryDirectory() as tmp:
             c, exe = Path(tmp)/'capture.c', Path(tmp)/'capture'
-            c.write_text(harness)
+            c.write_text(harness, encoding='utf-8')
             built = subprocess.run([cc, '-std=gnu11', '-Wall', '-Wextra', '-Werror', str(c), '-o', str(exe)], capture_output=True, text=True)
             self.assertEqual(built.returncode, 0, built.stderr)
             subprocess.run([str(exe)], check=True)
