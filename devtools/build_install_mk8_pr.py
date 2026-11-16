@@ -15,14 +15,14 @@ import tempfile
 import urllib.request
 import zipfile
 
-COMMIT = '308a672078e0ec5850acb23945f8ad05a4f4929c'
+COMMIT = 'ddbef92136654f08c75f7232116a59356ee67814'
 PACKAGE = 'org.nx2a.t0100152000022000.prtest'
 LABEL = 'MK8 PR Test'
 CPU_PACKAGE = PACKAGE + '.cpubc'
 CPU_LABEL = 'MK8 CPU BC Test'
 UPSTREAM_PACKAGE = PACKAGE + '.cpubaseline'
 UPSTREAM_LABEL = 'MK8 CPU BC Baseline'
-UPSTREAM_COMMIT = '5e4ea3b5953944163987ecc2752258e551c3ba06'
+UPSTREAM_COMMIT = 'e5a4703aec9af80a82c21669a8c01a3652ceb2bc'
 DRIVER = 'libmk8_pr_turnip.so'
 MARKER = b'BC buffer readback allocation failed'
 BASELINE_MARKER = b'copy of a BC texture decoded on the CPU into a buffer: skipped'

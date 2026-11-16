@@ -24,8 +24,8 @@ Build and install unchanged upstream with forced CPU BC decoding:
 
 | App | Source | Package |
 | --- | --- | --- |
-| MK8 CPU BC Test | PR #140 at `308a672` | `org.nx2a.t0100152000022000.prtest.cpubc` |
-| MK8 CPU BC Baseline | Upstream `5e4ea3b`, the PR's rebase base | `org.nx2a.t0100152000022000.prtest.cpubaseline` |
+| MK8 CPU BC Test | PR #140 at `ddbef92` | `org.nx2a.t0100152000022000.prtest.cpubc` |
+| MK8 CPU BC Baseline | Upstream `e5a4703`, the PR's rebase base | `org.nx2a.t0100152000022000.prtest.cpubaseline` |
 
 Each has separate saves and settings. Both bundle the selected Turnip driver and start with GPU readback off. The existing working game and MK8 PR Test use different package IDs. Rebuilding one comparison app updates that app.
 
@@ -53,7 +53,7 @@ curl -fL https://raw.githubusercontent.com/kianborg/nx2android-mk8-deluxe/devtoo
 .venv-pr/bin/python devtools/build_install_mk8_pr.py --lenovo --upstream-baseline
 ```
 
-These build the same two separate test apps listed above. They pin the published PR at `308a672` and its unchanged upstream base at `5e4ea3b`, so the comparison isolates the PR. They do not build the full fork or silently change PR source to a newer upstream revision. PR #140 was separately integration-tested against upstream `d4bccf0`; that check did not update the published PR branch.
+These build the same two separate test apps listed above. They pin the published PR at `ddbef92` and its unchanged upstream base at `e5a4703`, so the comparison isolates the PR. They do not build the full fork or silently change PR source to a newer upstream revision. PR #140 was separately integration-tested against upstream `d4bccf0`; that check did not update the published PR branch.
 
 First compare the same scene with readback off in both apps. Check the runtime log for `BC no (decoded on the CPU)` to establish that this is natural fallback coverage. `BC yes` means the device's current driver supports native BC; report that rather than claiming a CPU-only device test. An artifact, crash or slow frame rate alone does not identify a PR regression.
 
@@ -87,7 +87,7 @@ Refresh both scripts from this branch using the download commands above, then ru
 
 This mode implies `--lenovo`. It creates **MK8 Clip PR** (`org.nx2a.t0100152000022000.prtest.cpubc.clipdepth`) and **MK8 Clip Base** (`org.nx2a.t0100152000022000.prtest.cpubaseline.clipdepth`). They coexist with the prior apps and use separate saves. System Vulkan and automatic BC selection remain enabled; Both diagnostic builds start with GPU readback off. After verifying the picture, the PR app can switch readback using its verified build receipt; the upstream baseline continues to reject the PR-only readback option.
 
-The pinned base and PR commits remain 5e4ea3b and 308a672. The helper adds the same stage-selective conversion to each downloaded tree: vertex output, or geometry output when present, converts `z` to `(z+w)/2` before clipping. Zero-to-one depth, raster discard, fragment stages and devices with native depth-clip control retain their existing path. Required conversion failures stop rather than silently continuing with the original module. Variant caching distinguishes converted modules. Shader bundles are unchanged.
+The pinned base and PR commits remain e5a4703 and ddbef92. The helper adds the same stage-selective conversion to each downloaded tree: vertex output, or geometry output when present, converts `z` to `(z+w)/2` before clipping. Zero-to-one depth, raster discard, fragment stages and devices with native depth-clip control retain their existing path. Required conversion failures stop rather than silently continuing with the original module. Variant caching distinguishes converted modules. Shader bundles are unchanged.
 
 The conversion's C/header files come from fork commit 5134759 with SHA-256 checks, and the build receipt records that revision. The helper rejects unexpected source layouts and checks the resulting APK for the conversion marker before installing. It edits only a fresh downloaded build folder.
 
@@ -105,3 +105,19 @@ Refresh the helper, then use the work folder printed when **MK8 Clip PR** was bu
 Do not pass `--clip-depth-test` again: the existing diagnostic is identified from the receipt. This action verifies the source revision, clip-conversion revision, device, installed host hash and conversion marker before stopping the app and changing settings. It preserves the system driver and automatic BC selection, and does not rebuild or reinstall. Reopen MK8 Clip PR and repeat the same scene, then collect logs immediately. Omit `--gpu-readback` in the configure command to return to off. The Clip Base app rejects readback-on.
 
 The runtime's `BC GPU snapshot: ordered readback completed` line is needed to establish that a successful snapshot occurred. If it is absent, report the test as readback enabled but path execution unconfirmed, regardless of whether the picture is visible.
+
+
+## Nothing Phone (1): reviewer artifact comparison
+
+The current helper pins the published PR review fixes at ddbef92 and unchanged upstream at e5a4703. Download the helper again before testing. Older build receipts require rebuilding; do not reuse a Lenovo receipt or a previous PR runtime for this comparison.
+
+Connect only the Nothing Phone (or select its serial with `--device`). Build these without `--lenovo` or `--clip-depth-test`:
+
+```bash
+.venv-pr/bin/python devtools/build_install_mk8_pr.py --cpu-bc
+.venv-pr/bin/python devtools/build_install_mk8_pr.py --upstream-baseline
+```
+
+Both use the same selected Turnip ZIP, force CPU BC decoding and start with GPU readback off. The two separate package IDs preserve the working game. Repeat the exact scene where the earlier visual artifacts appeared, using the same kart, camera and handheld/docked setting. Let pipeline warmup settle before comparing. Collect logs immediately after each run and take matching screenshots of the artifacts if present. Report whether they occur in both, only one, or neither. Native BC support on the phone does not invalidate this comparison because CPU fallback is explicitly forced.
+
+Leave GPU readback off until this comparison is complete: this check answers the reviewer's default-path regression question, not the separate ordered-snapshot coverage question.
