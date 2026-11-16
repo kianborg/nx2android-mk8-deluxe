@@ -69,10 +69,20 @@ class PRBuilder(unittest.TestCase):
     def test_lenovo_upstream_baseline(self):
         self.exercise_app(True, baseline=True, lenovo=True)
 
-    def exercise_app(self, cpu, baseline=False, lenovo=False):
+    def test_clip_pr_identity_and_readback_off(self):
+        self.exercise_app(True, lenovo=True, clip=True)
+
+    def test_clip_baseline_identity_and_readback_off(self):
+        self.exercise_app(True, baseline=True, lenovo=True, clip=True)
+
+    def exercise_app(self, cpu, baseline=False, lenovo=False, clip=False):
         force_cpu = cpu and not lenovo
         package = tool.UPSTREAM_PACKAGE if baseline else tool.CPU_PACKAGE if cpu else tool.PACKAGE
         label, commit, repository, _, marker = tool.PROFILES[package]
+        if clip:
+            package += '.clipdepth'
+            label = 'MK8 Clip Base' if baseline else 'MK8 Clip PR'
+            marker += tool.CLIP_MARKER
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)
             game = root / 'game'
@@ -118,6 +128,8 @@ class PRBuilder(unittest.TestCase):
             arguments = ['helper', '--game-folder', str(game), '--keys', str(keys), '--driver', str(driver)]
             if cpu:
                 arguments.append('--cpu-bc')
+            if clip:
+                arguments.append('--clip-depth-test')
             if lenovo:
                 arguments.append('--lenovo')
             if baseline:
@@ -126,6 +138,7 @@ class PRBuilder(unittest.TestCase):
             try:
                 with patch.object(tool, 'source', return_value=repo) as source, \
                      patch.object(tool, 'dependencies'), \
+                     patch.object(tool, 'apply_clip_depth') as clip_patch, \
                      patch.object(tool.subprocess, 'run', side_effect=run), \
                      patch('porter.adb.Adb', return_value=phone), \
                      patch('porter.config.load', return_value={}), \
@@ -141,6 +154,16 @@ class PRBuilder(unittest.TestCase):
                     self.assertNotIn('DM_VK_DRIVER=turnip', phone.env)
                     self.assertEqual((work / 'env-before-install.txt').read_text().splitlines()[-1], 'DM_VK_BC_DECODE=1')
                     self.assertEqual(working.read_bytes(), b'working APK must remain')
+                    if clip:
+                        clip_patch.assert_called_once_with(repo)
+                        receipt = json.loads((work / 'build.json').read_text())
+                        self.assertEqual(receipt['package'], package)
+                        self.assertTrue(receipt['clip_depth_test'])
+                        self.assertFalse(receipt['force_cpu'])
+                        self.assertTrue(receipt['system_driver'])
+                        self.assertNotIn('DM_VK_DRIVER=', phone.env)
+                        self.assertEqual(len(commands), 2)
+                        return
                     if not cpu:
                         with patch.object(sys, 'argv', ['helper', '--configure-only', str(work), '--cpu-bc']):
                             with self.assertRaises(SystemExit):

@@ -73,6 +73,7 @@ def collect(adb, output):
                             host = {
                                 'sha256': hashlib.sha256(data).hexdigest(),
                                 'bytes': len(data),
+                                'has_clip_depth_marker': b'GL clip depth remapped to Vulkan' in data,
                                 'has_current_readback_switch': b'DM_VK_X_BC_GPU_READBACK' in data,
                                 'has_old_readback_switch': b'DM_VK_BC_GPU_READBACK' in data,
                                 'has_snapshot_completion_marker': b'BC GPU snapshot: ordered readback completed' in data,

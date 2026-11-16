@@ -73,3 +73,22 @@ curl -fL https://raw.githubusercontent.com/kianborg/nx2android-mk8-deluxe/devtoo
 ```
 
 Upload the printed ZIP and screenshots of the artifacts, noting which app and readback setting produced each. With multiple devices connected, pass `--device SERIAL` to the collector too. It gathers available MK8 logs/settings and PR host marker metadata; it makes no phone settings changes, installs nothing, and retains no inspected APK.
+
+## Lenovo black-screen clip-depth experiment
+
+The captured Mali driver reports no depth-clip-control extension. The published isolated runtime does not convert the GL clip-depth range on that path. `--clip-depth-test` adds the fork's existing runtime conversion to both pinned sources, without adding it to PR #140. This tests a possible cause of the black picture; it is not a confirmed fix.
+
+Refresh both scripts from this branch using the download commands above, then run:
+
+```bash
+.venv-pr/bin/python devtools/build_install_mk8_pr.py --clip-depth-test
+.venv-pr/bin/python devtools/build_install_mk8_pr.py --clip-depth-test --upstream-baseline
+```
+
+This mode implies `--lenovo`. It creates **MK8 Clip PR** (`org.nx2a.t0100152000022000.prtest.cpubc.clipdepth`) and **MK8 Clip Base** (`org.nx2a.t0100152000022000.prtest.cpubaseline.clipdepth`). They coexist with the prior apps and use separate saves. System Vulkan and automatic BC selection remain enabled; GPU readback is off and cannot be opted into for this diagnostic mode. Diagnostic receipts cannot be used with `--configure-only`; make a fresh build to change the experiment.
+
+The pinned base and PR commits remain 5e4ea3b and 308a672. The helper adds the same stage-selective conversion to each downloaded tree: vertex output, or geometry output when present, converts `z` to `(z+w)/2` before clipping. Zero-to-one depth, raster discard, fragment stages and devices with native depth-clip control retain their existing path. Required conversion failures stop rather than silently continuing with the original module. Variant caching distinguishes converted modules. Shader bundles are unchanged.
+
+The conversion's C/header files come from fork commit 5134759 with SHA-256 checks, and the build receipt records that revision. The helper rejects unexpected source layouts and checks the resulting APK for the conversion marker before installing. It edits only a fresh downloaded build folder.
+
+Launch each **Clip** app, allow up to roughly a minute for startup given the recorded copied-pool stalls, and report whether any menus or logo appear. Do not judge performance from this experiment: the expensive copied-pool path is unchanged. Collect a ZIP immediately after each run using `collect_mk8_bc_logs.py`. Look for `GL clip depth remapped to Vulkan` to confirm the conversion was exercised. Include a screenshot if the picture changes. If it stays black, the frame images and pass-level state need investigation next; missing depth-clip control alone does not prove the cause.

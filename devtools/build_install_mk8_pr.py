@@ -34,6 +34,57 @@ PROFILES = {
 }
 
 
+
+CLIP_MARKER = b'GL clip depth remapped to Vulkan'
+CLIP_REVISION = '5134759b5a150e9877c30c3497401ef7402c1813'
+CLIP_ASSETS = {'spv_depth.c': '47954b368e05a27cf02e831672ce8bf35215e430c12010216866fb82ffbc1e74', 'spv_depth.h': '96327d43b7914b218f5f4fa67f23ba17f979ff16d0959ee23c78a193d746c567'}
+
+
+def apply_clip_depth(repo):
+    """Diagnostic-only: apply the same conversion to the two pinned source trees."""
+    android = repo / 'nxnative/dm/android'
+    def replace_once(text, old, new):
+        if text.count(old) != 1:
+            raise ValueError('Clip-depth experiment source mismatch: ' + old[:70])
+        return text.replace(old, new, 1)
+    shader = (android / 'gfx_vk_shader.c').read_text()
+    shader = '#include "spv_depth.h"\n' + shader
+    shader = replace_once(shader, '    int dual = fd >> 1 & 1;', '    int depth_remap = (fd & 4) && (s->stage == 0 || s->stage == 2);\n    int dual = fd >> 1 & 1;')
+    shader = replace_once(shader, '(uint32_t)fd | (uint32_t)dual)', '(uint32_t)fd | (uint32_t)dual | (uint32_t)depth_remap)')
+    shader = shader.replace('fd | dual << 1', 'fd | dual << 1 | depth_remap << 2')
+    block = """    if (depth_remap) {
+        if ((nb || xo || fd || dual) && !w) die("[vk] prerequisite depth variant failed");
+        uint32_t n2 = 0, *w2 = vk_spv_depth_remap(w ? w : s->spv, nw, &n2);
+        free(w); w = w2; nw = n2;
+        if (!w) die("[vk] GL clip-depth remap failed");
+    }
+"""
+    shader = replace_once(shader, '    if (w) { VkShaderModuleCreateInfo ci', block + '    if (w) { VkShaderModuleCreateInfo ci')
+    shader = replace_once(shader, 'if (vkCreateShaderModule(V.dev, &ci, NULL, &m)) { m = s->mod;', 'if (vkCreateShaderModule(V.dev, &ci, NULL, &m)) { if (depth_remap) die("[vk] required clip-depth variant refused"); m = s->mod;')
+    shader = replace_once(shader, '    if (s->nvar < 8) s->var[s->nvar++] = (typeof(s->var[0])){um, im, xo,', '    if (depth_remap) VKLOG("shader %016llx: GL clip depth remapped to Vulkan (z = (z + w) / 2)", (unsigned long long)s->key);\n    if (s->nvar < 8) s->var[s->nvar++] = (typeof(s->var[0])){um, im, xo,')
+    executor = (android / 'gfx_vk_exec.c').read_text()
+    start = executor.index('    for (int i = 0; i < 3; i++) if (stg[i] && !(i == 1 && k->raster_discard)) ss[ns++]')
+    end = executor.index('\n', start)
+    line = executor[start:end]
+    line = line.replace(')) ss[ns++]', ')) {\n        int remap = k->clip_neg1 && !V.has_depth_clip_ctl && i == (stg[2] ? 2 : 0) && !k->raster_discard;\n        ss[ns++]')
+    line = line.replace('k->alt &&', 'k->alt && !remap &&').replace('i == 1 ? (k->fdz ? 1 : 0) | (k->dual ? 2 : 0) : 0)', '(i == 1 ? (k->fdz ? 1 : 0) | (k->dual ? 2 : 0) : 0) | (remap ? 4 : 0))')
+    line += '\n    }'
+    executor = executor[:start] + line + executor[end:]
+    # Verify all assets before writing modified source. The helper only changes a fresh downloaded work tree.
+    assets = {}
+    for name, digest in CLIP_ASSETS.items():
+        url = f'https://raw.githubusercontent.com/kianborg/nx2android-mk8-deluxe/{CLIP_REVISION}/nxnative/dm/android/{name}'
+        with urllib.request.urlopen(url, timeout=60) as response:
+            data = response.read(1024 * 1024)
+        if hashlib.sha256(data).hexdigest() != digest:
+            raise ValueError('Clip-depth asset checksum mismatch: ' + name)
+        assets[name] = data
+    for name, data in assets.items():
+        (android / name).write_bytes(data)
+    (android / 'gfx_vk_shader.c').write_text(shader)
+    (android / 'gfx_vk_exec.c').write_text(executor)
+
+
 def dependencies():
     missing = []
     for module, package in [('lz4.block', 'lz4'), ('capstone', 'capstone'),
@@ -162,12 +213,17 @@ def main():
     p.add_argument('--device')
     p.add_argument('--jobs', type=int, default=2)
     p.add_argument('--cpu-bc', action='store_true', help='build the separate MK8 CPU BC Test app; default builds the native-BC baseline app')
+    p.add_argument('--clip-depth-test', action='store_true', help='diagnostic Lenovo build with clip-depth conversion; separate app, readback off')
     p.add_argument('--lenovo', action='store_true', help='Lenovo Idea Tab 5G: system Vulkan, no Turnip ZIP, automatic BC selection in a separate test app')
     p.add_argument('--upstream-baseline', action='store_true', help='build a separate unchanged-upstream app with CPU BC forced and GPU readback off')
     p.add_argument('--gpu-readback', action='store_true', help='opt into ordered snapshots in the CPU BC test app')
     p.add_argument('--configure-only', type=Path, help='work folder from a previous build; verify that app and change its readback setting without rebuilding')
     args = p.parse_args()
     try:
+        if args.clip_depth_test:
+            args.lenovo = True
+            if args.configure_only or args.gpu_readback:
+                raise ValueError('Clip-depth test requires a fresh build with GPU readback off')
         if args.lenovo:
             args.cpu_bc = True
         package = UPSTREAM_PACKAGE if args.upstream_baseline else CPU_PACKAGE if args.cpu_bc else PACKAGE
@@ -203,6 +259,10 @@ def main():
             work = Path(tempfile.mkdtemp(prefix='mk8-pr-test-', dir=game))
             print(f'Work folder: {work}', flush=True)
             repo = source(work, commit, repository, ordered=package != UPSTREAM_PACKAGE)
+            if args.clip_depth_test:
+                apply_clip_depth(repo)
+                package += '.clipdepth'
+                label = 'MK8 Clip Base' if args.upstream_baseline else 'MK8 Clip PR'
         if args.gpu_readback and package != CPU_PACKAGE:
             raise ValueError('--gpu-readback requires the CPU BC PR test app')
         remote = f'/sdcard/Android/data/{package}/files/env.txt'
@@ -241,6 +301,10 @@ def main():
         data = manifests[0].parent
         apk = output / (data.name.removesuffix('-data') + '.apk')
         sha = host_hash(apk, marker)
+        if args.clip_depth_test:
+            with zipfile.ZipFile(apk) as z:
+                if CLIP_MARKER not in z.read('lib/arm64-v8a/libdmhost.so'):
+                    raise ValueError('Diagnostic APK lacks the clip-depth conversion')
         exists = adb.shell(f'if [ -f {shlex.quote(remote)} ]; then printf yes; else printf no; fi').strip()
         if exists not in ('yes', 'no'):
             raise ValueError('Could not check existing phone settings')
@@ -248,14 +312,16 @@ def main():
         if previous is not None:
             (work / 'env-before-install.txt').write_text(previous)
         (work / 'build.json').write_text(json.dumps({'commit': commit, 'source': str(repo),
-            'system_driver': system_driver, 'force_cpu': cpu,
+            'system_driver': system_driver, 'force_cpu': cpu, 'clip_depth_test': args.clip_depth_test, 'clip_revision': CLIP_REVISION if args.clip_depth_test else None,
             'apk': str(apk), 'host_sha256': sha, 'device': serial, 'package': package}, indent=2) + '\n')
         subprocess.run([sys.executable, '-m', 'porter', 'install', str(data), '--apk', str(apk),
                         '--device', serial], cwd=repo, check=True)
         configure(adb, work, cpu, previous, args.gpu_readback, package=package, label=label, system_driver=system_driver)
         print('APK:', apk)
         print(f'Open {label}. It has separate saves and settings from the working app.')
-        if package == UPSTREAM_PACKAGE:
+        if args.clip_depth_test:
+            print('Diagnostic only: compare picture and GL clip depth remapped to Vulkan log lines. GPU readback is off.')
+        elif package == UPSTREAM_PACKAGE:
             print(f'Unchanged upstream {commit[:7]}: BC {"forced CPU" if cpu else "automatic"}, GPU readback off.')
             print('Compare the same scene with MK8 CPU BC Test, with readback off in both apps.')
         elif package == CPU_PACKAGE:
