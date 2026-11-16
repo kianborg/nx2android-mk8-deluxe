@@ -231,14 +231,20 @@ def main():
         if args.configure_only:
             work = args.configure_only.expanduser().resolve()
             receipt = json.loads((work / 'build.json').read_text())
-            if receipt.get('package') not in PROFILES:
+            package = receipt.get('package', '')
+            clip_receipt = package in (CPU_PACKAGE + '.clipdepth', UPSTREAM_PACKAGE + '.clipdepth')
+            profile_package = package.removesuffix('.clipdepth') if clip_receipt else package
+            if profile_package not in PROFILES:
                 raise ValueError('This receipt is not for the separate PR test app. Run a new build with this helper.')
-            package = receipt['package']
-            if args.upstream_baseline and package != UPSTREAM_PACKAGE:
+            if clip_receipt and (not receipt.get('clip_depth_test') or receipt.get('clip_revision') != CLIP_REVISION):
+                raise ValueError('Clip-depth receipt does not match this diagnostic revision; rebuild before switching settings.')
+            if args.upstream_baseline and profile_package != UPSTREAM_PACKAGE:
                 raise ValueError('This receipt is not for the upstream CPU baseline. Build it with --upstream-baseline first.')
             if args.cpu_bc and package == PACKAGE:
                 raise ValueError('This is a native BC app receipt. Build again with --cpu-bc to install the separate CPU BC app.')
-            label, commit, repository, cpu, marker = PROFILES[package]
+            label, commit, repository, cpu, marker = PROFILES[profile_package]
+            if clip_receipt:
+                label = 'MK8 Clip Base' if profile_package == UPSTREAM_PACKAGE else 'MK8 Clip PR'
             if receipt.get('commit') != commit:
                 raise ValueError('This receipt uses an older PR runtime. Rebuild before testing the review changes.')
             repo = Path(receipt['source'])
@@ -263,7 +269,7 @@ def main():
                 apply_clip_depth(repo)
                 package += '.clipdepth'
                 label = 'MK8 Clip Base' if args.upstream_baseline else 'MK8 Clip PR'
-        if args.gpu_readback and package != CPU_PACKAGE:
+        if args.gpu_readback and package not in (CPU_PACKAGE, CPU_PACKAGE + '.clipdepth'):
             raise ValueError('--gpu-readback requires the CPU BC PR test app')
         remote = f'/sdcard/Android/data/{package}/files/env.txt'
         sys.path.insert(0, str(repo))
@@ -285,6 +291,10 @@ def main():
                 adb.run('pull', base, str(apk), timeout=120)
                 if host_hash(apk, marker) != receipt['host_sha256']:
                     raise ValueError('Installed runtime differs from this PR build; settings were not changed')
+                if clip_receipt:
+                    with zipfile.ZipFile(apk) as z:
+                        if CLIP_MARKER not in z.read('lib/arm64-v8a/libdmhost.so'):
+                            raise ValueError('Installed runtime lacks the clip-depth conversion; settings were not changed')
             configure(adb, work, cpu, gpu_readback=args.gpu_readback, package=package, label=label, system_driver=system_driver)
             return
         library = None if system_driver else driver_library(driver, work)

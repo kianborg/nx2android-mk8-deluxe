@@ -162,6 +162,27 @@ class PRBuilder(unittest.TestCase):
                         self.assertFalse(receipt['force_cpu'])
                         self.assertTrue(receipt['system_driver'])
                         self.assertNotIn('DM_VK_DRIVER=', phone.env)
+                        if baseline:
+                            before = phone.env
+                            with patch.object(sys, 'argv', ['helper', '--configure-only', str(work), '--gpu-readback']):
+                                with self.assertRaises(SystemExit):
+                                    tool.main()
+                            self.assertEqual(phone.env, before)
+                        else:
+                            with patch.object(sys, 'argv', ['helper', '--configure-only', str(work), '--gpu-readback']):
+                                tool.main()
+                            self.assertIn('DM_VK_X_BC_GPU_READBACK=1', phone.env)
+                            self.assertIn('DM_VK_X_BC_CPU=0', phone.env)
+                            self.assertNotIn('DM_VK_DRIVER=', phone.env)
+                            with patch.object(sys, 'argv', ['helper', '--configure-only', str(work)]):
+                                tool.main()
+                            self.assertIn('DM_VK_X_BC_GPU_READBACK=0', phone.env)
+                            phone.host = marker + b'changed runtime'
+                            before = phone.env
+                            with patch.object(sys, 'argv', ['helper', '--configure-only', str(work), '--gpu-readback']):
+                                with self.assertRaises(SystemExit):
+                                    tool.main()
+                            self.assertEqual(phone.env, before)
                         self.assertEqual(len(commands), 2)
                         return
                     if not cpu:
