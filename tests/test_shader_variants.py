@@ -14,7 +14,7 @@ class ShaderVariants(unittest.TestCase):
     def test_independent_variant_bits_and_cache_entries(self):
         source = (DM/'android/gfx_vk_shader.c').read_text()
         start = source.index('static VkShaderModule vk_shader_module_(',0)
-        function = source[start:source.index('\n// static buffers:', start)]
+        function = source[start:source.index('\n// Static support,', start)]
         executor = (DM/'android/gfx_vk_exec.c').read_text()
         start = executor.index('static int vertex_integer_kind(')
         integer_kind = executor[start:executor.index('static VkFormat vertex_format(', start)]

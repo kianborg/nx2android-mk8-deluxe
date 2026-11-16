@@ -31,6 +31,7 @@ static VkRenderingInfo P_ri;
 static uint32_t cleared_layers;
 static VkRenderingAttachmentInfo P_ca[8];static int P_cleared,ended,clears;static uint32_t cleared_slot;
 static struct {unsigned folded;} g_vkst;
+typedef struct {int w;} vkimg_t;static vkimg_t g_s0_image;static struct {vkimg_t *im;} P_att[8];
 static void vk_end_pass(void) {ended++;S.pass_open=0;}
 static int begin_pass(void) {return 1;}
 static int pass_commit(void) {return 1;}
@@ -72,6 +73,7 @@ int main(void) {
  S.pass_open=1;clear_color(&c);assert(clears==1 && cleared_slot==3 && cleared_layers==1);
  P_ri.layerCount=4;clear_color(&c);assert(clears==2 && cleared_slot==3 && cleared_layers==4);
  c.index=-1;clear_color(&c);c.index=8;clear_color(&c);assert(clears==2);
+ P_att[3].im=&g_s0_image;c.index=4;clear_color(&c);assert(clears==2);P_att[3].im=NULL;clear_color(&c);assert(clears==3);
  return 0;
 }
 '''
