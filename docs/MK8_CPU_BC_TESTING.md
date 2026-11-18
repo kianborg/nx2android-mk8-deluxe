@@ -24,7 +24,7 @@ Build and install unchanged upstream with forced CPU BC decoding:
 
 | App | Source | Package |
 | --- | --- | --- |
-| MK8 CPU BC Test | PR #140 at `ddbef92` | `org.nx2a.t0100152000022000.prtest.cpubc` |
+| MK8 CPU BC Test | PR #140 at `4c5a419` | `org.nx2a.t0100152000022000.prtest.cpubc` |
 | MK8 CPU BC Baseline | Upstream `e5a4703`, the PR's rebase base | `org.nx2a.t0100152000022000.prtest.cpubaseline` |
 
 Each has separate saves and settings. Both bundle the selected Turnip driver and start with GPU readback off. The existing working game and MK8 PR Test use different package IDs. Rebuilding one comparison app updates that app.
@@ -53,7 +53,7 @@ curl -fL https://raw.githubusercontent.com/kianborg/nx2android-mk8-deluxe/devtoo
 .venv-pr/bin/python devtools/build_install_mk8_pr.py --lenovo --upstream-baseline
 ```
 
-These build the same two separate test apps listed above. They pin the published PR at `ddbef92` and its unchanged upstream base at `e5a4703`, so the comparison isolates the PR. They do not build the full fork or silently change PR source to a newer upstream revision. PR #140 was separately integration-tested against upstream `d4bccf0`; that check did not update the published PR branch.
+These build the same two separate test apps listed above. They pin the published PR at `4c5a419` and its unchanged upstream base at `e5a4703`, so the comparison isolates the PR. They do not build the full fork or silently change PR source to a newer upstream revision. PR #140 was separately integration-tested against upstream `d4bccf0`; that check did not update the published PR branch.
 
 First compare the same scene with readback off in both apps. Check the runtime log for `BC no (decoded on the CPU)` to establish that this is natural fallback coverage. `BC yes` means the device's current driver supports native BC; report that rather than claiming a CPU-only device test. An artifact, crash or slow frame rate alone does not identify a PR regression.
 
@@ -87,7 +87,7 @@ Refresh both scripts from this branch using the download commands above, then ru
 
 This mode implies `--lenovo`. It creates **MK8 Clip PR** (`org.nx2a.t0100152000022000.prtest.cpubc.clipdepth`) and **MK8 Clip Base** (`org.nx2a.t0100152000022000.prtest.cpubaseline.clipdepth`). They coexist with the prior apps and use separate saves. System Vulkan and automatic BC selection remain enabled; Both diagnostic builds start with GPU readback off. After verifying the picture, the PR app can switch readback using its verified build receipt; the upstream baseline continues to reject the PR-only readback option.
 
-The pinned base and PR commits remain e5a4703 and ddbef92. The helper adds the same stage-selective conversion to each downloaded tree: vertex output, or geometry output when present, converts `z` to `(z+w)/2` before clipping. Zero-to-one depth, raster discard, fragment stages and devices with native depth-clip control retain their existing path. Required conversion failures stop rather than silently continuing with the original module. Variant caching distinguishes converted modules. Shader bundles are unchanged.
+The pinned base and PR commits remain e5a4703 and 4c5a419. The helper adds the same stage-selective conversion to each downloaded tree: vertex output, or geometry output when present, converts `z` to `(z+w)/2` before clipping. Zero-to-one depth, raster discard, fragment stages and devices with native depth-clip control retain their existing path. Required conversion failures stop rather than silently continuing with the original module. Variant caching distinguishes converted modules. Shader bundles are unchanged.
 
 The conversion's C/header files come from fork commit 5134759 with SHA-256 checks, and the build receipt records that revision. The helper rejects unexpected source layouts and checks the resulting APK for the conversion marker before installing. It edits only a fresh downloaded build folder.
 
@@ -109,7 +109,7 @@ The runtime's `BC GPU snapshot: ordered readback completed` line is needed to es
 
 ## Nothing Phone (1): reviewer artifact comparison
 
-The current helper pins the published PR review fixes at ddbef92 and unchanged upstream at e5a4703. Download the helper again before testing. Older build receipts require rebuilding; do not reuse a Lenovo receipt or a previous PR runtime for this comparison.
+The current helper pins the published PR review fixes at 4c5a419 and unchanged upstream at e5a4703. Download the helper again before testing. Older build receipts require rebuilding; do not reuse a Lenovo receipt or a previous PR runtime for this comparison.
 
 Connect only the Nothing Phone (or select its serial with `--device`). Build these without `--lenovo` or `--clip-depth-test`:
 
@@ -121,3 +121,35 @@ Connect only the Nothing Phone (or select its serial with `--device`). Build the
 Both use the same selected Turnip ZIP, force CPU BC decoding and start with GPU readback off. The two separate package IDs preserve the working game. Repeat the exact scene where the earlier visual artifacts appeared, using the same kart, camera and handheld/docked setting. Let pipeline warmup settle before comparing. Collect logs immediately after each run and take matching screenshots of the artifacts if present. Report whether they occur in both, only one, or neither. Native BC support on the phone does not invalidate this comparison because CPU fallback is explicitly forced.
 
 Leave GPU readback off until this comparison is complete: this check answers the reviewer's default-path regression question, not the separate ordered-snapshot coverage question.
+
+
+## Find a real BC buffer-upload reproducer: Odyssey / 3D World
+
+The PR source is pinned to `4c5a419`, which adds a one-time successful-upload diagnostic and restores `DM_VK_WATCH`. These probes use the published PR unchanged, not an injected upload or a game-specific workaround. A diagnostic marker is checked in the built host before installation. The selected game's title ID is verified in the data-pack manifest before installation; a wrong game folder is refused.
+
+Use the Nothing Phone, the same Turnip ZIP and forced CPU BC. First test the PR with readback **off**:
+
+```bash
+.venv-pr/bin/python devtools/build_install_mk8_pr.py --game odyssey --game-folder /actual/odyssey/folder --cpu-bc
+```
+
+This installs **Odyssey CPU BC Test**, package `org.nx2a.t0100000000010000.prtest.cpubc`, separately from a normal Odyssey install. Save its printed work-folder path. Test version 1.4.1: cold-start to the title screen and enter the first playable area or load your test save. Record what you did; these are candidate scenes, not yet confirmed reproducers. Immediately collect:
+
+```bash
+.venv-pr/bin/python devtools/collect_mk8_bc_logs.py --game odyssey
+```
+
+The collector includes the data-pack version metadata. Look for `BC CPU buffer upload: NVN format ..., WxHxD, GPU readback no`. Only a real runtime success line proves this branch executed. Native compressed support alone, BC texture format announcements, a working picture or a CopyBufferToTexture counter without its BC format are insufficient. If the line is absent, do not offer that scene as the maintainer's reproducer.
+
+The second candidate is 3D World + Bowser's Fury 1.2.2:
+
+```bash
+.venv-pr/bin/python devtools/build_install_mk8_pr.py --game 3dworld --game-folder /actual/3dworld/folder --cpu-bc
+.venv-pr/bin/python devtools/collect_mk8_bc_logs.py --game 3dworld
+```
+
+It installs **3D World CPU BC Test**, package `org.nx2a.t010028600EBDA000.prtest.cpubc`. Try startup, the mode-selection menu, and a first level in either mode while recording the tested sequence. No scene is yet verified to exercise the branch.
+
+After a positive marker, build that game's upstream comparison by adding `--upstream-baseline`; this has its own `.prtest.cpubaseline` identity and source pinned to `e5a4703`. The upstream base does not contain the new success log. Compare the exact scene, frames and RED diagnostics with CPU BC forced in both. You can separately opt into readback on the PR app using `--game odyssey --configure-only /actual/pr/work/folder --gpu-readback` (or `--game 3dworld`). Receipts and installed runtime hashes are verified first. Do not mix games' build receipts.
+
+Always refresh both helper and collector from this branch. `--game` defaults to MK8 for existing users; do not omit it for these two games. Other-game probes currently target the Nothing/Turnip workflow and reject `--lenovo`/`--clip-depth-test` to avoid accidentally applying MK8-specific diagnostic setup. No game assets or keys should be uploaded.

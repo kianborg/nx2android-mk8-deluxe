@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Collect installed MK8 apps' logs/settings without changing the phone."""
+"""Collect the selected game's installed apps' logs/settings without changing the phone."""
 import argparse
 import hashlib
 from datetime import datetime, timezone
@@ -11,23 +11,24 @@ import tempfile
 import zipfile
 
 PREFIX = 'org.nx2a.t0100152000022000'
+GAME_PREFIXES = {'mk8': PREFIX, 'odyssey': 'org.nx2a.t0100000000010000', '3dworld': 'org.nx2a.t010028600EBDA000'}
 
 
-def collect(adb, output):
+def collect(adb, output, prefix=PREFIX):
     def run(*args):
         result = subprocess.run([*adb, *args], capture_output=True, timeout=60)
         return result.returncode, result.stdout, result.stderr.decode(errors='replace').strip()
 
-    code, raw, error = run('shell', 'pm', 'list', 'packages', PREFIX)
+    code, raw, error = run('shell', 'pm', 'list', 'packages', prefix)
     if code:
         raise RuntimeError(error or raw.decode(errors='replace'))
     packages = sorted({line.removeprefix('package:').strip()
                        for line in raw.decode().splitlines()
-                       if line.startswith('package:' + PREFIX)})
+                       if line.startswith('package:' + prefix)})
     # Android package names contain letters/digits, underscores and dots only.
     packages = [p for p in packages if all(c.isascii() and (c.isalnum() or c in '._') for c in p)]
     if not packages:
-        raise RuntimeError('No MK8 package with the expected prefix was found. Run adb shell pm list packages and check the installed app identity.')
+        raise RuntimeError('No selected game package with the expected prefix was found. Run adb shell pm list packages and check the installed app identity.')
     report = {'packages': {}, 'device': {}}
     for prop in ('ro.product.model', 'ro.build.version.release', 'ro.build.version.sdk'):
         code, raw, error = run('shell', 'getprop', prop)
@@ -39,7 +40,7 @@ def collect(adb, output):
         entry = {'files': {}, 'root': root}
         code, raw, error = run('shell', 'ls', '-la', root)
         (folder / 'directory.txt').write_bytes(raw + b'\n' + error.encode())
-        for filename in ('log.txt', 'log.prev.txt', 'env.txt', 'settings.txt'):
+        for filename in ('log.txt', 'log.prev.txt', 'env.txt', 'settings.txt', 'nx2a-data.json'):
             code, raw, error = run('exec-out', 'cat', root + '/' + filename)
             entry['files'][filename] = {'collected': code == 0, 'error': error if code else ''}
             if code == 0:
@@ -52,7 +53,7 @@ def collect(adb, output):
                 code, raw, error = run('logcat', '-d', '-v', 'threadtime', '--pid=' + pid)
                 if code == 0:
                     (folder / f'logcat-{pid}.txt').write_bytes(raw)
-        if package.startswith(PREFIX + '.prtest'):
+        if package.startswith(prefix + '.prtest'):
             code, raw, error = run('shell', 'pm', 'path', package)
             paths = [line.removeprefix('package:').strip()
                      for line in raw.decode(errors='replace').splitlines()
@@ -74,6 +75,7 @@ def collect(adb, output):
                                 'sha256': hashlib.sha256(data).hexdigest(),
                                 'bytes': len(data),
                                 'has_clip_depth_marker': b'GL clip depth remapped to Vulkan' in data,
+                                'has_cpu_upload_success_marker': b'BC CPU buffer upload:' in data,
                                 'has_current_readback_switch': b'DM_VK_X_BC_GPU_READBACK' in data,
                                 'has_old_readback_switch': b'DM_VK_BC_GPU_READBACK' in data,
                                 'has_snapshot_completion_marker': b'BC GPU snapshot: ordered readback completed' in data,
@@ -92,7 +94,7 @@ def collect(adb, output):
         print(f'{package}: {found or "no external log/settings files found"}')
     (output / 'collection.json').write_text(json.dumps(report, indent=2) + '\n')
     (output / 'README.txt').write_text(
-        'Read-only collection of installed MK8 package logs and settings.\n'
+        'Read-only collection of the selected game package logs and settings.\n'
         'log.prev.txt is the previous app startup, not necessarily the opposite test mode.\n'
         'env.txt is the current settings file; it does not prove which settings a previous run used.\n'
         'A running app PID does not prove that app was in the foreground.\n'
@@ -103,13 +105,14 @@ def collect(adb, output):
 
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument('--game', choices=GAME_PREFIXES, default='mk8')
     parser.add_argument('--adb', default='adb', help='ADB executable path')
     parser.add_argument('--device', help='ADB device serial, if more than one device is connected')
     args = parser.parse_args()
     adb = [args.adb] + (['-s', args.device] if args.device else [])
     try:
-        folder = Path(tempfile.mkdtemp(prefix='mk8-bc-logs-' + datetime.now(timezone.utc).strftime('%Y%m%d-%H%M%S') + '-', dir=Path.cwd()))
-        collect(adb, folder)
+        folder = Path(tempfile.mkdtemp(prefix=args.game + '-bc-logs-' + datetime.now(timezone.utc).strftime('%Y%m%d-%H%M%S') + '-', dir=Path.cwd()))
+        collect(adb, folder, GAME_PREFIXES[args.game])
         archive = shutil.make_archive(str(folder), 'zip', root_dir=folder)
         print(f'Upload this ZIP: {archive}')
     except (OSError, RuntimeError, subprocess.SubprocessError) as error:

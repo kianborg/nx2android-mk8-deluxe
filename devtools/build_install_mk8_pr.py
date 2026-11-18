@@ -15,7 +15,7 @@ import tempfile
 import urllib.request
 import zipfile
 
-COMMIT = 'ddbef92136654f08c75f7232116a59356ee67814'
+COMMIT = '4c5a41959b7930e0e15f5603a4abd2325cfd0d8a'
 PACKAGE = 'org.nx2a.t0100152000022000.prtest'
 LABEL = 'MK8 PR Test'
 CPU_PACKAGE = PACKAGE + '.cpubc'
@@ -32,6 +32,25 @@ PROFILES = {
     CPU_PACKAGE: (CPU_LABEL, COMMIT, 'kianborg/nx2android-mk8-deluxe', True, MARKER),
     UPSTREAM_PACKAGE: (UPSTREAM_LABEL, UPSTREAM_COMMIT, 'shirai91/nx2android', True, BASELINE_MARKER),
 }
+
+
+GAMES = {
+    'mk8': ('0100152000022000', 'MK8'),
+    'odyssey': ('0100000000010000', 'Odyssey'),
+    '3dworld': ('010028600EBDA000', '3D World'),
+}
+SUCCESS_MARKER = b'BC CPU buffer upload:'
+
+
+def profiles_for(game):
+    title, name = GAMES[game]
+    native = f'org.nx2a.t{title}.prtest'
+    cpu, base = native + '.cpubc', native + '.cpubaseline'
+    return native, cpu, base, {
+        native: (name + ' PR Test', COMMIT, 'kianborg/nx2android-mk8-deluxe', False, MARKER),
+        cpu: (name + ' CPU BC Test', COMMIT, 'kianborg/nx2android-mk8-deluxe', True, MARKER),
+        base: (name + ' CPU BC Baseline', UPSTREAM_COMMIT, 'shirai91/nx2android', True, BASELINE_MARKER),
+    }
 
 
 
@@ -162,6 +181,8 @@ def host_hash(apk, marker=MARKER):
         data = z.read(entry)
     if marker not in data:
         raise ValueError('APK lacks the selected BC upload code; installation/settings stopped')
+    if marker == MARKER and SUCCESS_MARKER not in data:
+        raise ValueError('APK lacks the CPU-upload success diagnostic; installation/settings stopped')
     if marker == BASELINE_MARKER and MARKER in data:
         raise ValueError('Baseline APK contains the PR upload code; installation/settings stopped')
     return hashlib.sha256(data).hexdigest()
@@ -207,7 +228,8 @@ def main():
     adb_error = type('UnavailableAdbError', (Exception,), {})
     home = Path.home()
     p = argparse.ArgumentParser(description=__doc__)
-    p.add_argument('--game-folder', type=Path, default=home / 'MK8-DLUXE-NSwiTcH')
+    p.add_argument('--game', choices=GAMES, default='mk8', help='game identity for the separate test app')
+    p.add_argument('--game-folder', type=Path)
     p.add_argument('--keys', type=Path, default=home / 'Downloads/ProdKeys.NET-v22.5.0/prod.keys')
     p.add_argument('--driver', type=Path, default=home / 'Downloads/turnip_v24.3.0_R9v2.zip')
     p.add_argument('--device')
@@ -220,56 +242,61 @@ def main():
     p.add_argument('--configure-only', type=Path, help='work folder from a previous build; verify that app and change its readback setting without rebuilding')
     args = p.parse_args()
     try:
+        native_package, cpu_package, upstream_package, profiles = profiles_for(args.game)
+        if args.game != 'mk8' and (args.lenovo or args.clip_depth_test):
+            raise ValueError('Other-game probes currently use the Nothing Phone/Turnip workflow; omit Lenovo/clip options')
+        if args.game != 'mk8' and not args.configure_only and not args.game_folder:
+            raise ValueError('Specify --game-folder for the selected game')
         if args.clip_depth_test:
             args.lenovo = True
             if args.configure_only or args.gpu_readback:
                 raise ValueError('Clip-depth test requires a fresh build with GPU readback off')
         if args.lenovo:
             args.cpu_bc = True
-        package = UPSTREAM_PACKAGE if args.upstream_baseline else CPU_PACKAGE if args.cpu_bc else PACKAGE
+        package = upstream_package if args.upstream_baseline else cpu_package if args.cpu_bc else native_package
         dependencies()
         if args.configure_only:
             work = args.configure_only.expanduser().resolve()
             receipt = json.loads((work / 'build.json').read_text())
             package = receipt.get('package', '')
-            clip_receipt = package in (CPU_PACKAGE + '.clipdepth', UPSTREAM_PACKAGE + '.clipdepth')
+            clip_receipt = package in (cpu_package + '.clipdepth', upstream_package + '.clipdepth')
             profile_package = package.removesuffix('.clipdepth') if clip_receipt else package
-            if profile_package not in PROFILES:
+            if profile_package not in profiles:
                 raise ValueError('This receipt is not for the separate PR test app. Run a new build with this helper.')
             if clip_receipt and (not receipt.get('clip_depth_test') or receipt.get('clip_revision') != CLIP_REVISION):
                 raise ValueError('Clip-depth receipt does not match this diagnostic revision; rebuild before switching settings.')
-            if args.upstream_baseline and profile_package != UPSTREAM_PACKAGE:
+            if args.upstream_baseline and profile_package != upstream_package:
                 raise ValueError('This receipt is not for the upstream CPU baseline. Build it with --upstream-baseline first.')
-            if args.cpu_bc and package == PACKAGE:
+            if args.cpu_bc and package == native_package:
                 raise ValueError('This is a native BC app receipt. Build again with --cpu-bc to install the separate CPU BC app.')
-            label, commit, repository, cpu, marker = PROFILES[profile_package]
+            label, commit, repository, cpu, marker = profiles[profile_package]
             if clip_receipt:
-                label = 'MK8 Clip Base' if profile_package == UPSTREAM_PACKAGE else 'MK8 Clip PR'
+                label = 'MK8 Clip Base' if profile_package == upstream_package else 'MK8 Clip PR'
             if receipt.get('commit') != commit:
                 raise ValueError('This receipt uses an older PR runtime. Rebuild before testing the review changes.')
             repo = Path(receipt['source'])
             system_driver = args.lenovo or receipt.get('system_driver', False)
             cpu = False if args.lenovo else receipt.get('force_cpu', cpu)
         else:
-            label, commit, repository, cpu, marker = PROFILES[package]
+            label, commit, repository, cpu, marker = profiles[package]
             system_driver = args.lenovo
             if args.lenovo:
                 cpu = False
-            if args.gpu_readback and package != CPU_PACKAGE:
+            if args.gpu_readback and package != cpu_package:
                 raise ValueError('--gpu-readback requires --cpu-bc and is unavailable in the upstream baseline')
-            game = args.game_folder.expanduser().resolve()
+            game = (args.game_folder or home / 'MK8-DLUXE-NSwiTcH').expanduser().resolve()
             keys = args.keys.expanduser().resolve()
             driver = args.driver.expanduser().resolve()
             if not game.is_dir() or not keys.is_file() or (not system_driver and not driver.is_file()) or args.jobs < 1:
                 raise ValueError('Check --game-folder, --keys, --driver and --jobs')
             work = Path(tempfile.mkdtemp(prefix='mk8-pr-test-', dir=game))
             print(f'Work folder: {work}', flush=True)
-            repo = source(work, commit, repository, ordered=package != UPSTREAM_PACKAGE)
+            repo = source(work, commit, repository, ordered=package != upstream_package)
             if args.clip_depth_test:
                 apply_clip_depth(repo)
                 package += '.clipdepth'
                 label = 'MK8 Clip Base' if args.upstream_baseline else 'MK8 Clip PR'
-        if args.gpu_readback and package not in (CPU_PACKAGE, CPU_PACKAGE + '.clipdepth'):
+        if args.gpu_readback and package not in (cpu_package, cpu_package + '.clipdepth'):
             raise ValueError('--gpu-readback requires the CPU BC PR test app')
         remote = f'/sdcard/Android/data/{package}/files/env.txt'
         sys.path.insert(0, str(repo))
@@ -308,6 +335,9 @@ def main():
         manifests = list(output.glob('*-data/nx2a-data.json'))
         if len(manifests) != 1 or json.loads(manifests[0].read_text()).get('package') != package:
             raise ValueError('Unexpected built data pack')
+        manifest = json.loads(manifests[0].read_text(encoding='utf-8'))
+        if manifest.get('title_id') != GAMES[args.game][0]:
+            raise ValueError('Built title ID does not match --game; installation/settings stopped')
         data = manifests[0].parent
         apk = output / (data.name.removesuffix('-data') + '.apk')
         sha = host_hash(apk, marker)
@@ -322,25 +352,30 @@ def main():
         if previous is not None:
             (work / 'env-before-install.txt').write_text(previous)
         (work / 'build.json').write_text(json.dumps({'commit': commit, 'source': str(repo),
+            'title_id': manifest['title_id'], 'game_version': manifest.get('version'), 'display_version': manifest.get('display'),
             'system_driver': system_driver, 'force_cpu': cpu, 'clip_depth_test': args.clip_depth_test, 'clip_revision': CLIP_REVISION if args.clip_depth_test else None,
             'apk': str(apk), 'host_sha256': sha, 'device': serial, 'package': package}, indent=2) + '\n')
         subprocess.run([sys.executable, '-m', 'porter', 'install', str(data), '--apk', str(apk),
                         '--device', serial], cwd=repo, check=True)
         configure(adb, work, cpu, previous, args.gpu_readback, package=package, label=label, system_driver=system_driver)
         print('APK:', apk)
+        print('Game:', manifest.get('name'), manifest.get('display'), 'title ID:', manifest['title_id'])
         print(f'Open {label}. It has separate saves and settings from the working app.')
         if args.clip_depth_test:
             print('Diagnostic only: compare picture and GL clip depth remapped to Vulkan log lines. GPU readback is off.')
-        elif package == UPSTREAM_PACKAGE:
+        elif package == upstream_package:
             print(f'Unchanged upstream {commit[:7]}: BC {"forced CPU" if cpu else "automatic"}, GPU readback off.')
-            print('Compare the same scene with MK8 CPU BC Test, with readback off in both apps.')
-        elif package == CPU_PACKAGE:
+            print(f'Compare the same scene with {profiles[cpu_package][0]}, with readback off in both apps.')
+        elif package == cpu_package:
             print('Enable GPU readback for this CPU BC app without rebuilding:')
-            print(shlex.join([sys.executable, str(Path(__file__).resolve()), '--configure-only', str(work), '--gpu-readback']))
+            print(shlex.join([sys.executable, str(Path(__file__).resolve()), '--game', args.game, '--configure-only', str(work), '--gpu-readback']))
             print('Omit --gpu-readback to turn readback off; driver and BC selection stay unchanged.')
         else:
             print('Build the separate CPU BC app by running this helper again with --cpu-bc.')
-        print('The isolated branch lacks other MK8 fixes from the full fork. A failed CPU-mode launch alone does not prove a regression in this PR.')
+        if args.game == 'mk8':
+            print('The isolated branch lacks other MK8 fixes from the full fork. A failed CPU-mode launch alone does not prove a regression in this PR.')
+        else:
+            print('Candidate reproducer: record the game version and scene, and check for the BC CPU buffer upload success line before claiming path coverage.')
         if system_driver:
             print('Confirm the log says "BC no (decoded on the CPU)" before reporting native CPU-fallback coverage.')
     except (OSError, ValueError, KeyError, ModuleNotFoundError, zipfile.BadZipFile, subprocess.CalledProcessError, adb_error) as error:

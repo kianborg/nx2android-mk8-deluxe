@@ -16,6 +16,8 @@ spec.loader.exec_module(tool)
 
 
 def apk(path, host=tool.MARKER):
+    if tool.MARKER in host and tool.SUCCESS_MARKER not in host:
+        host += tool.SUCCESS_MARKER
     with zipfile.ZipFile(path, 'w') as z:
         z.writestr('lib/arm64-v8a/libdmhost.so', host)
 
@@ -75,18 +77,34 @@ class PRBuilder(unittest.TestCase):
     def test_clip_baseline_identity_and_readback_off(self):
         self.exercise_app(True, baseline=True, lenovo=True, clip=True)
 
-    def exercise_app(self, cpu, baseline=False, lenovo=False, clip=False):
+    def test_odyssey_pr_app(self):
+        self.exercise_app(True, game='odyssey')
+
+    def test_odyssey_baseline_app(self):
+        self.exercise_app(True, baseline=True, game='odyssey')
+
+    def test_3dworld_pr_app(self):
+        self.exercise_app(True, game='3dworld')
+
+    def test_3dworld_baseline_app(self):
+        self.exercise_app(True, baseline=True, game='3dworld')
+
+    def test_wrong_game_folder_stops_before_install(self):
+        self.exercise_app(True, game='odyssey', wrong_title=True)
+
+    def exercise_app(self, cpu, baseline=False, lenovo=False, clip=False, game='mk8', wrong_title=False):
         force_cpu = cpu and not lenovo
-        package = tool.UPSTREAM_PACKAGE if baseline else tool.CPU_PACKAGE if cpu else tool.PACKAGE
-        label, commit, repository, _, marker = tool.PROFILES[package]
+        native_package, cpu_package, upstream_package, profiles = tool.profiles_for(game)
+        package = upstream_package if baseline else cpu_package if cpu else native_package
+        label, commit, repository, _, marker = profiles[package]
         if clip:
             package += '.clipdepth'
             label = 'MK8 Clip Base' if baseline else 'MK8 Clip PR'
             marker += tool.CLIP_MARKER
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)
-            game = root / 'game'
-            game.mkdir()
+            game_folder = root / 'game'
+            game_folder.mkdir()
             keys = root / 'keys'
             keys.write_text('not real keys')
             driver = root / 'driver.so'
@@ -95,7 +113,7 @@ class PRBuilder(unittest.TestCase):
             struct.pack_into('<HH', elf, 16, 3, 183)
             if not lenovo:
                 driver.write_bytes(elf)
-            working = game / 'MarioKart8Deluxe.apk'
+            working = game_folder / 'MarioKart8Deluxe.apk'
             working.write_bytes(b'working APK must remain')
             repo = root / 'isolated-source'
             repo.mkdir()
@@ -119,13 +137,13 @@ class PRBuilder(unittest.TestCase):
                     out = Path(command[command.index('-o') + 1])
                     data = out / 'MarioKart8Deluxe-data'
                     data.mkdir(parents=True)
-                    (data / 'nx2a-data.json').write_text(json.dumps({'package': package}))
+                    (data / 'nx2a-data.json').write_text(json.dumps({'package': package, 'title_id': tool.GAMES['mk8' if wrong_title else game][0]}))
                     apk(out / 'MarioKart8Deluxe.apk', marker)
                 else:
                     self.assertEqual(command[3], 'install')
                     phone.env = 'DM_VK_DRIVER=libmk8_pr_turnip.so\nNEW_DEFAULT=1\n'
 
-            arguments = ['helper', '--game-folder', str(game), '--keys', str(keys), '--driver', str(driver)]
+            arguments = ['helper', '--game', game, '--game-folder', str(game_folder), '--keys', str(keys), '--driver', str(driver)]
             if cpu:
                 arguments.append('--cpu-bc')
             if clip:
@@ -144,8 +162,16 @@ class PRBuilder(unittest.TestCase):
                      patch('porter.config.load', return_value={}), \
                      patch('porter.toolchain.find_adb', return_value='adb'):
                     with patch.object(sys, 'argv', arguments):
+                        if wrong_title:
+                            before = phone.env
+                            with self.assertRaises(SystemExit):
+                                tool.main()
+                            self.assertEqual(len(commands), 1)
+                            self.assertEqual(phone.env, before)
+                            self.assertFalse(phone.calls)
+                            return
                         tool.main()
-                    work = next(game.glob('mk8-pr-test-*'))
+                    work = next(game_folder.glob('mk8-pr-test-*'))
                     source.assert_called_once_with(work, commit, repository, ordered=not baseline)
                     self.assertIn(f'DM_VK_X_BC_CPU={int(force_cpu)}', phone.env)
                     self.assertIn('DM_VK_X_BC_GPU_READBACK=0', phone.env)
@@ -164,43 +190,43 @@ class PRBuilder(unittest.TestCase):
                         self.assertNotIn('DM_VK_DRIVER=', phone.env)
                         if baseline:
                             before = phone.env
-                            with patch.object(sys, 'argv', ['helper', '--configure-only', str(work), '--gpu-readback']):
+                            with patch.object(sys, 'argv', ['helper', '--game', game, '--configure-only', str(work), '--gpu-readback']):
                                 with self.assertRaises(SystemExit):
                                     tool.main()
                             self.assertEqual(phone.env, before)
                         else:
-                            with patch.object(sys, 'argv', ['helper', '--configure-only', str(work), '--gpu-readback']):
+                            with patch.object(sys, 'argv', ['helper', '--game', game, '--configure-only', str(work), '--gpu-readback']):
                                 tool.main()
                             self.assertIn('DM_VK_X_BC_GPU_READBACK=1', phone.env)
                             self.assertIn('DM_VK_X_BC_CPU=0', phone.env)
                             self.assertNotIn('DM_VK_DRIVER=', phone.env)
-                            with patch.object(sys, 'argv', ['helper', '--configure-only', str(work)]):
+                            with patch.object(sys, 'argv', ['helper', '--game', game, '--configure-only', str(work)]):
                                 tool.main()
                             self.assertIn('DM_VK_X_BC_GPU_READBACK=0', phone.env)
                             phone.host = marker + b'changed runtime'
                             before = phone.env
-                            with patch.object(sys, 'argv', ['helper', '--configure-only', str(work), '--gpu-readback']):
+                            with patch.object(sys, 'argv', ['helper', '--game', game, '--configure-only', str(work), '--gpu-readback']):
                                 with self.assertRaises(SystemExit):
                                     tool.main()
                             self.assertEqual(phone.env, before)
                         self.assertEqual(len(commands), 2)
                         return
                     if not cpu:
-                        with patch.object(sys, 'argv', ['helper', '--configure-only', str(work), '--cpu-bc']):
+                        with patch.object(sys, 'argv', ['helper', '--game', game, '--configure-only', str(work), '--cpu-bc']):
                             with self.assertRaises(SystemExit):
                                 tool.main()
                     if baseline:
-                        with patch.object(sys, 'argv', ['helper', '--configure-only', str(work), '--gpu-readback']):
+                        with patch.object(sys, 'argv', ['helper', '--game', game, '--configure-only', str(work), '--gpu-readback']):
                             with self.assertRaises(SystemExit):
                                 tool.main()
                     readback = cpu and not baseline
                     options = ['--gpu-readback'] if readback else []
-                    with patch.object(sys, 'argv', ['helper', '--configure-only', str(work), *options]):
+                    with patch.object(sys, 'argv', ['helper', '--game', game, '--configure-only', str(work), *options]):
                         tool.main()
                     self.assertIn(f'DM_VK_X_BC_CPU={int(force_cpu)}', phone.env)
                     self.assertIn(f'DM_VK_X_BC_GPU_READBACK={int(readback)}', phone.env)
                     if cpu:
-                        with patch.object(sys, 'argv', ['helper', '--configure-only', str(work)]):
+                        with patch.object(sys, 'argv', ['helper', '--game', game, '--configure-only', str(work)]):
                             tool.main()
                         self.assertIn(f'DM_VK_X_BC_CPU={int(force_cpu)}', phone.env)
                         self.assertIn('DM_VK_X_BC_GPU_READBACK=0', phone.env)
@@ -214,11 +240,11 @@ class PRBuilder(unittest.TestCase):
                     else:
                         self.assertIn('DM_VK_DRIVER=' + tool.DRIVER, phone.env)
                     self.assertEqual(len(commands), 2)  # no rebuild/reinstall for mode switch
-                    working_package = 'org.nx2a.t0100152000022000'
+                    working_package = native_package.removesuffix('.prtest')
                     for call in phone.calls:
                         text = call if isinstance(call, str) else ' '.join(map(str, call))
                         self.assertNotIn(working_package + '/files', text)
-                        for other_package in set(tool.PROFILES) - {package}:
+                        for other_package in set(profiles) - {package}:
                             self.assertNotIn(other_package + '/files', text)
                             self.assertNotIn('force-stop ' + other_package + '\n', text + '\n')
                             self.assertNotIn('pm path ' + other_package + '\n', text + '\n')
@@ -228,7 +254,7 @@ class PRBuilder(unittest.TestCase):
                         self.assertNotIn('pm path ' + working_package + '\n', text + '\n')
                     phone.host = marker + b'different host'
                     before = phone.env
-                    with patch.object(sys, 'argv', ['helper', '--configure-only', str(work)]):
+                    with patch.object(sys, 'argv', ['helper', '--game', game, '--configure-only', str(work)]):
                         with self.assertRaises(SystemExit):
                             tool.main()
                     self.assertEqual(phone.env, before)
