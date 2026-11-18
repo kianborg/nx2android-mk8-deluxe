@@ -25,7 +25,7 @@ class GameCollector(unittest.TestCase):
                     elif a[:3]==['shell','ls','-la']:self.assertIn(package,a[3]);out=b'log.txt env.txt nx2a-data.json'
                     elif a[:2]==['exec-out','cat']:
                         self.assertTrue(a[2].startswith('/sdcard/Android/data/'+package+'/files/'))
-                        if a[2].endswith('/nx2a-data.json'):out=json.dumps({'title_id':prefix.removeprefix('org.nx2a.t'),'display':'1.4.1' if game=='odyssey' else '1.2.2'}).encode()
+                        if a[2].endswith('/nx2a-data.json'):out=json.dumps({'title_id':prefix.removeprefix('org.nx2a.t').upper(),'display':'1.4.1' if game=='odyssey' else '1.2.2'}).encode()
                         elif a[2].endswith('/log.txt'):out=b'BC CPU buffer upload: NVN format 0x49, 4x4x1, GPU readback no\n'
                         else:code=1;err=b'No such file'
                     elif a[:2]==['shell','pidof'] or a[:3]==['shell','pm','path']:code=1
@@ -34,6 +34,6 @@ class GameCollector(unittest.TestCase):
                 with patch.object(collector.subprocess,'run',side_effect=run):
                     collector.collect(['adb'],Path(tmp),prefix)
                 metadata=json.loads((Path(tmp)/package/'nx2a-data.json').read_text())
-                self.assertEqual(metadata['title_id'],prefix.removeprefix('org.nx2a.t'))
+                self.assertEqual(metadata['title_id'],prefix.removeprefix('org.nx2a.t').upper())
                 self.assertIn('BC CPU buffer upload:',(Path(tmp)/package/'log.txt').read_text())
                 self.assertFalse(any('push' in c or 'install' in c or 'force-stop' in c for c in calls))

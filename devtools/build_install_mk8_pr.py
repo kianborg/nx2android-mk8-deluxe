@@ -44,7 +44,7 @@ SUCCESS_MARKER = b'BC CPU buffer upload:'
 
 def profiles_for(game):
     title, name = GAMES[game]
-    native = f'org.nx2a.t{title}.prtest'
+    native = f'org.nx2a.t{title.lower()}.prtest'
     cpu, base = native + '.cpubc', native + '.cpubaseline'
     return native, cpu, base, {
         native: (name + ' PR Test', COMMIT, 'kianborg/nx2android-mk8-deluxe', False, MARKER),

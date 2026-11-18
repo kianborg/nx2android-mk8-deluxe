@@ -148,7 +148,7 @@ The second candidate is 3D World + Bowser's Fury 1.2.2:
 .venv-pr/bin/python devtools/collect_mk8_bc_logs.py --game 3dworld
 ```
 
-It installs **3D World CPU BC Test**, package `org.nx2a.t010028600EBDA000.prtest.cpubc`. Try startup, the mode-selection menu, and a first level in either mode while recording the tested sequence. No scene is yet verified to exercise the branch.
+It installs **3D World CPU BC Test**, package `org.nx2a.t010028600ebda000.prtest.cpubc`. Try startup, the mode-selection menu, and a first level in either mode while recording the tested sequence. No scene is yet verified to exercise the branch.
 
 After a positive marker, build that game's upstream comparison by adding `--upstream-baseline`; this has its own `.prtest.cpubaseline` identity and source pinned to `e5a4703`. The upstream base does not contain the new success log. Compare the exact scene, frames and RED diagnostics with CPU BC forced in both. You can separately opt into readback on the PR app using `--game odyssey --configure-only /actual/pr/work/folder --gpu-readback` (or `--game 3dworld`). Receipts and installed runtime hashes are verified first. Do not mix games' build receipts.
 

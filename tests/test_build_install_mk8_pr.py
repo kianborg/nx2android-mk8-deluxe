@@ -1,5 +1,7 @@
 """Verify the isolated-PR install and settings workflow without a phone."""
 import importlib.util
+import ast
+import re
 import json
 from pathlib import Path
 import struct
@@ -56,6 +58,23 @@ class Phone:
 
 
 class PRBuilder(unittest.TestCase):
+    def test_game_packages_match_porter_validation(self):
+        tree = ast.parse((ROOT / 'porter/pipeline.py').read_text(encoding='utf-8'))
+        patterns = [n.args[0].value for n in ast.walk(tree)
+                    if isinstance(n, ast.Call) and isinstance(n.func, ast.Attribute)
+                    and n.func.attr == 'fullmatch' and len(n.args) == 2
+                    and isinstance(n.args[0], ast.Constant)
+                    and ast.unparse(n.args[1]) == 'self.package']
+        self.assertEqual(len(patterns), 1)
+        from test_bc_game_collector import collector
+        for game in tool.GAMES:
+            native, cpu, baseline, profiles = tool.profiles_for(game)
+            self.assertEqual(native, collector.GAME_PREFIXES[game] + '.prtest')
+            for package in profiles:
+                self.assertRegex(package, re.compile(patterns[0] + '$'))
+                self.assertNotEqual(package, collector.GAME_PREFIXES[game])
+
+
     def test_native_app_install_and_identity(self):
         self.exercise_app(False)
 

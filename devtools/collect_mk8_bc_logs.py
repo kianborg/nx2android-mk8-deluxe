@@ -11,7 +11,7 @@ import tempfile
 import zipfile
 
 PREFIX = 'org.nx2a.t0100152000022000'
-GAME_PREFIXES = {'mk8': PREFIX, 'odyssey': 'org.nx2a.t0100000000010000', '3dworld': 'org.nx2a.t010028600EBDA000'}
+GAME_PREFIXES = {'mk8': PREFIX, 'odyssey': 'org.nx2a.t0100000000010000', '3dworld': 'org.nx2a.t010028600ebda000'}
 
 
 def collect(adb, output, prefix=PREFIX):
