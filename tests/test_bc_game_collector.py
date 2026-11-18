@@ -13,6 +13,29 @@ collector = importlib.util.module_from_spec(spec)
 spec.loader.exec_module(collector)
 
 class GameCollector(unittest.TestCase):
+    def test_trace_counts_use_latest_summary_and_maximum_sample(self):
+        log = '''BC transfer trace v1: summary recorded=0 recorded_bc=0 replayed=0 replayed_bc=0 cpu_uploads=0 native_uploads=0 skips=0
+BC transfer trace v1: replay b2t format=0x49 outcome=entry count=1
+BC transfer trace v1: replay b2t format=0x49 outcome=entry count=2
+BC transfer trace v1: replay b2t format=0x49 outcome=entry count=4
+BC transfer trace v1: replay b2t format=0x49 outcome=invalid-region count=1
+BC transfer trace v1: summary recorded=2 recorded_bc=2 replayed=4 replayed_bc=4 cpu_uploads=3 native_uploads=0 skips=1
+'''
+        result = collector.transfer_trace(log)
+        self.assertEqual(result['summary_samples'], 2)
+        self.assertEqual(result['latest_summary']['replayed'], 4)
+        self.assertEqual(result['sampled_replay_outcome_counts']['0x49/entry'], 4)
+        self.assertEqual(result['sampled_replay_outcome_counts']['0x49/invalid-region'], 1)
+
+    def test_missing_trace_is_not_reported_as_zero_requests(self):
+        result = collector.transfer_trace('BC CPU buffer upload: NVN format 0x49\n')
+        self.assertIsNone(result['latest_summary'])
+        self.assertEqual(result['summary_samples'], 0)
+
+    def test_active_zero_trace_is_reported(self):
+        result = collector.transfer_trace('BC transfer trace v1: summary recorded=0 recorded_bc=0 replayed=0 replayed_bc=0 cpu_uploads=0 native_uploads=0 skips=0\n')
+        self.assertEqual(result['latest_summary']['recorded_bc'], 0)
+
     def test_other_game_prefixes_and_version_metadata(self):
         for game in ('odyssey', '3dworld'):
             with self.subTest(game=game), tempfile.TemporaryDirectory() as tmp:

@@ -108,14 +108,22 @@ class PRBuilder(unittest.TestCase):
     def test_3dworld_baseline_app(self):
         self.exercise_app(True, baseline=True, game='3dworld')
 
+    def test_odyssey_transfer_trace_and_mode_switch(self):
+        self.exercise_app(True, game='odyssey', trace=True)
+
+    def test_3dworld_transfer_trace_and_mode_switch(self):
+        self.exercise_app(True, game='3dworld', trace=True)
+
     def test_wrong_game_folder_stops_before_install(self):
         self.exercise_app(True, game='odyssey', wrong_title=True)
 
-    def exercise_app(self, cpu, baseline=False, lenovo=False, clip=False, game='mk8', wrong_title=False):
+    def exercise_app(self, cpu, baseline=False, lenovo=False, clip=False, game='mk8', wrong_title=False, trace=False):
         force_cpu = cpu and not lenovo
         native_package, cpu_package, upstream_package, profiles = tool.profiles_for(game)
         package = upstream_package if baseline else cpu_package if cpu else native_package
         label, commit, repository, _, marker = profiles[package]
+        if trace:
+            marker += tool.TRACE_MARKER + b'DM_VK_X_BC_TRANSFER_TRACE'
         if clip:
             package += '.clipdepth'
             label = 'MK8 Clip Base' if baseline else 'MK8 Clip PR'
@@ -171,11 +179,14 @@ class PRBuilder(unittest.TestCase):
                 arguments.append('--lenovo')
             if baseline:
                 arguments.append('--upstream-baseline')
+            if trace:
+                arguments.append('--trace-transfers')
             old_path = list(sys.path)
             try:
                 with patch.object(tool, 'source', return_value=repo) as source, \
                      patch.object(tool, 'dependencies'), \
                      patch.object(tool, 'apply_clip_depth') as clip_patch, \
+                     patch.object(tool, 'apply_transfer_trace') as trace_patch, \
                      patch.object(tool.subprocess, 'run', side_effect=run), \
                      patch('porter.adb.Adb', return_value=phone), \
                      patch('porter.config.load', return_value={}), \
@@ -194,6 +205,11 @@ class PRBuilder(unittest.TestCase):
                     source.assert_called_once_with(work, commit, repository, ordered=not baseline)
                     self.assertIn(f'DM_VK_X_BC_CPU={int(force_cpu)}', phone.env)
                     self.assertIn('DM_VK_X_BC_GPU_READBACK=0', phone.env)
+                    self.assertIn(f'DM_VK_X_BC_TRANSFER_TRACE={int(trace)}', phone.env)
+                    if trace:
+                        trace_patch.assert_called_once_with(repo)
+                    else:
+                        trace_patch.assert_not_called()
                     self.assertIn('DM_LANG=en-US', phone.env)
                     self.assertIn('NEW_DEFAULT=1', phone.env)
                     self.assertNotIn('DM_VK_DRIVER=turnip', phone.env)
@@ -254,6 +270,8 @@ class PRBuilder(unittest.TestCase):
                     self.assertEqual(receipt['commit'], commit)
                     self.assertEqual(receipt['force_cpu'], force_cpu)
                     self.assertEqual(receipt['system_driver'], lenovo)
+                    self.assertEqual(receipt['transfer_trace'], 'v1' if trace else None)
+                    self.assertIn(f'DM_VK_X_BC_TRANSFER_TRACE={int(trace)}', phone.env)
                     if lenovo:
                         self.assertNotIn('DM_VK_DRIVER=', phone.env)
                     else:
@@ -295,6 +313,33 @@ class PRBuilder(unittest.TestCase):
             apk(root / 'old.apk', b'old host')
             with self.assertRaisesRegex(ValueError, 'lacks'):
                 tool.host_hash(root / 'old.apk')
+
+    def test_trace_requires_instrumented_apk(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            p = Path(tmp) / 'test.apk'
+            apk(p)
+            with self.assertRaisesRegex(ValueError, 'lacks transfer tracing'):
+                tool.host_hash(p, transfer_trace=True)
+            apk(p, tool.MARKER + tool.TRACE_MARKER + b'DM_VK_X_BC_TRANSFER_TRACE')
+            self.assertEqual(len(tool.host_hash(p, transfer_trace=True)), 64)
+
+    def test_trace_rejects_other_build_modes_before_device_access(self):
+        for options in ([], ['--upstream-baseline', '--cpu-bc'], ['--clip-depth-test', '--cpu-bc']):
+            with patch.object(tool, 'dependencies') as deps, patch.object(sys, 'argv', ['helper', '--trace-transfers', *options]):
+                with self.assertRaises(SystemExit):
+                    tool.main()
+                deps.assert_not_called()
+
+    def test_trace_rejects_uninstrumented_receipt_before_device_access(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            work = Path(tmp)
+            (work / 'build.json').write_text(json.dumps({'commit': tool.COMMIT,
+                'package': tool.CPU_PACKAGE, 'source': str(work)}))
+            with patch.object(tool, 'dependencies'), patch('porter.adb.Adb') as adb, \
+                 patch.object(sys, 'argv', ['helper', '--configure-only', str(work), '--trace-transfers']):
+                with self.assertRaises(SystemExit):
+                    tool.main()
+                adb.assert_not_called()
 
     def test_old_receipt_is_refused_before_phone_access(self):
         with tempfile.TemporaryDirectory() as tmp:

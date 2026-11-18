@@ -4,6 +4,7 @@ import argparse
 import hashlib
 from datetime import datetime, timezone
 import json
+import re
 from pathlib import Path
 import shutil
 import subprocess
@@ -12,6 +13,20 @@ import zipfile
 
 PREFIX = 'org.nx2a.t0100152000022000'
 GAME_PREFIXES = {'mk8': PREFIX, 'odyssey': 'org.nx2a.t0100000000010000', '3dworld': 'org.nx2a.t010028600ebda000'}
+
+
+def transfer_trace(text):
+    """Summarize the current log only; cumulative counts are never summed."""
+    summaries = re.findall(r'BC transfer trace v1: summary ((?:\w+=\d+ ?)+)', text)
+    latest = {k: int(v) for k, v in re.findall(r'(\w+)=(\d+)', summaries[-1])} if summaries else None
+    events = {}
+    for match in re.finditer(r'BC transfer trace v1: replay b2t format=(\w+) outcome=([\w-]+) count=(\d+)', text):
+        fmt, event, count = match.groups()
+        key = fmt + '/' + event
+        events[key] = max(events.get(key, 0), int(count))
+    return {'summary_samples': len(summaries), 'latest_summary': latest,
+            'sampled_replay_outcome_counts': events,
+            'note': 'Summary covers its last reporting point, not necessarily the end of the run. Recording and replay counts can differ with command reuse or asynchronous replay. Upload events mean copies recorded, not GPU completion.'}
 
 
 def collect(adb, output, prefix=PREFIX):
@@ -45,6 +60,9 @@ def collect(adb, output, prefix=PREFIX):
             entry['files'][filename] = {'collected': code == 0, 'error': error if code else ''}
             if code == 0:
                 (folder / filename).write_bytes(raw)
+        if (folder / 'log.txt').is_file():
+            entry['transfer_trace'] = transfer_trace((folder / 'log.txt').read_text(encoding='utf-8', errors='replace'))
+            (folder / 'transfer-trace.json').write_text(json.dumps(entry['transfer_trace'], indent=2) + '\n', encoding='utf-8')
         code, raw, error = run('shell', 'pidof', package)
         pids = raw.decode(errors='replace').split() if code == 0 else []
         entry['running_pids'] = pids
@@ -80,6 +98,7 @@ def collect(adb, output, prefix=PREFIX):
                                 'has_old_readback_switch': b'DM_VK_BC_GPU_READBACK' in data,
                                 'has_snapshot_completion_marker': b'BC GPU snapshot: ordered readback completed' in data,
                                 'has_ordered_upload_marker': b'BC buffer readback allocation failed' in data,
+                                'has_transfer_trace_marker': b'BC transfer trace v1:' in data,
                             }
                         except (OSError, KeyError, ValueError, zipfile.BadZipFile) as problem:
                             host['error'] = str(problem)
@@ -99,6 +118,7 @@ def collect(adb, output, prefix=PREFIX):
         'env.txt is the current settings file; it does not prove which settings a previous run used.\n'
         'A running app PID does not prove that app was in the foreground.\n'
         'installed-host.json checks switch/diagnostic strings in the installed PR APK; strings do not prove a path executed.\n'
+        'transfer-trace.json summarizes only log.txt; its latest totals cover the last summary, not necessarily the end of the run.\n'
         'Only host metadata is retained; the inspected APK is not included.\n'
         'No settings were changed, no apps stopped or installed, and logcat was not cleared.\n')
 
