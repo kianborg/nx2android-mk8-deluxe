@@ -79,3 +79,19 @@ play for about 30 seconds after gaining control, then collect with:
 GPU snapshots stay off for the initial trace. The installed title and version
 are verified and collected from the actual data manifest. Using BC textures
 does not by itself establish that the game uses the BC buffer-copy path.
+
+Super Mario Bros. Wonder uses `--game wonder` (title `010015100B514000`).
+The pinned source includes its game and Android profiles, with registered
+builds 1.0.0 and 1.2.1. The helper records the actual version from the data pack.
+For a dump at `/home/kianpc/SMB`:
+
+```bash
+.venv-pr/bin/python devtools/build_install_mk8_pr.py --game wonder --game-folder /home/kianpc/SMB --cpu-bc --trace-transfers
+```
+
+Open **Wonder CPU BC Test**, play for about 30 seconds after gaining control
+in the opening level, then collect with readback still off:
+
+```bash
+.venv-pr/bin/python devtools/collect_mk8_bc_logs.py --game wonder
+```

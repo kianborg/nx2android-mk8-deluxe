@@ -39,6 +39,7 @@ GAMES = {
     'odyssey': ('0100000000010000', 'Odyssey'),
     '3dworld': ('010028600EBDA000', '3D World'),
     'hollow-knight': ('0100633007D48000', 'Hollow Knight'),
+    'wonder': ('010015100B514000', 'Wonder'),
 }
 SUCCESS_MARKER = b'BC CPU buffer upload:'
 TRACE_MARKER = b'BC transfer trace v1:'

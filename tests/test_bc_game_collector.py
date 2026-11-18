@@ -37,7 +37,7 @@ BC transfer trace v1: summary recorded=2 recorded_bc=2 replayed=4 replayed_bc=4 
         self.assertEqual(result['latest_summary']['recorded_bc'], 0)
 
     def test_other_game_prefixes_and_version_metadata(self):
-        versions = {'odyssey': '1.4.1', '3dworld': '1.2.2', 'hollow-knight': '1.4.3.2'}
+        versions = {'odyssey': '1.4.1', '3dworld': '1.2.2', 'hollow-knight': '1.4.3.2', 'wonder': '1.2.1'}
         for game in versions:
             with self.subTest(game=game), tempfile.TemporaryDirectory() as tmp:
                 prefix=collector.GAME_PREFIXES[game]; package=prefix+'.prtest.cpubc'; calls=[]
