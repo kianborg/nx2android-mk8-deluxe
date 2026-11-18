@@ -114,6 +114,12 @@ class PRBuilder(unittest.TestCase):
     def test_3dworld_transfer_trace_and_mode_switch(self):
         self.exercise_app(True, game='3dworld', trace=True)
 
+    def test_original_hollow_knight_transfer_trace_and_mode_switch(self):
+        self.exercise_app(True, game='hollow-knight', trace=True)
+
+    def test_original_hollow_knight_wrong_title_stops_before_install(self):
+        self.exercise_app(True, game='hollow-knight', wrong_title=True, trace=True)
+
     def test_wrong_game_folder_stops_before_install(self):
         self.exercise_app(True, game='odyssey', wrong_title=True)
 

@@ -37,7 +37,8 @@ BC transfer trace v1: summary recorded=2 recorded_bc=2 replayed=4 replayed_bc=4 
         self.assertEqual(result['latest_summary']['recorded_bc'], 0)
 
     def test_other_game_prefixes_and_version_metadata(self):
-        for game in ('odyssey', '3dworld'):
+        versions = {'odyssey': '1.4.1', '3dworld': '1.2.2', 'hollow-knight': '1.4.3.2'}
+        for game in versions:
             with self.subTest(game=game), tempfile.TemporaryDirectory() as tmp:
                 prefix=collector.GAME_PREFIXES[game]; package=prefix+'.prtest.cpubc'; calls=[]
                 def run(command, **kwargs):
@@ -48,7 +49,7 @@ BC transfer trace v1: summary recorded=2 recorded_bc=2 replayed=4 replayed_bc=4 
                     elif a[:3]==['shell','ls','-la']:self.assertIn(package,a[3]);out=b'log.txt env.txt nx2a-data.json'
                     elif a[:2]==['exec-out','cat']:
                         self.assertTrue(a[2].startswith('/sdcard/Android/data/'+package+'/files/'))
-                        if a[2].endswith('/nx2a-data.json'):out=json.dumps({'title_id':prefix.removeprefix('org.nx2a.t').upper(),'display':'1.4.1' if game=='odyssey' else '1.2.2'}).encode()
+                        if a[2].endswith('/nx2a-data.json'):out=json.dumps({'title_id':prefix.removeprefix('org.nx2a.t').upper(),'display':versions[game]}).encode()
                         elif a[2].endswith('/log.txt'):out=b'BC CPU buffer upload: NVN format 0x49, 4x4x1, GPU readback no\n'
                         else:code=1;err=b'No such file'
                     elif a[:2]==['shell','pidof'] or a[:3]==['shell','pm','path']:code=1
@@ -58,5 +59,6 @@ BC transfer trace v1: summary recorded=2 recorded_bc=2 replayed=4 replayed_bc=4 
                     collector.collect(['adb'],Path(tmp),prefix)
                 metadata=json.loads((Path(tmp)/package/'nx2a-data.json').read_text())
                 self.assertEqual(metadata['title_id'],prefix.removeprefix('org.nx2a.t').upper())
+                self.assertEqual(metadata['display'], versions[game])
                 self.assertIn('BC CPU buffer upload:',(Path(tmp)/package/'log.txt').read_text())
                 self.assertFalse(any('push' in c or 'install' in c or 'force-stop' in c for c in calls))

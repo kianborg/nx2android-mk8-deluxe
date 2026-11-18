@@ -56,3 +56,26 @@ by the helper, with the real work folder it created. Trace mode is preserved.
 Receipts for older or uninstrumented builds cannot enable this trace without a
 rebuild. Omitting `--trace-transfers` on a fresh build produces the unchanged PR
 runtime with tracing off.
+
+For the original Hollow Knight, use `--game hollow-knight` in both helpers.
+This means title `0100633007D48000`, not Hollow Knight: Silksong. The pinned
+source has no profile for the original game: `porter --experimental` will
+attempt to generate one from your files. Its ability to build or start is
+unverified; a startup failure alone does not identify a PR #140 regression.
+No provisional game profile or extracted game data is added to this repository.
+
+```bash
+read -r -p "Enter your original Hollow Knight game-folder path: " hk_game_folder
+.venv-pr/bin/python devtools/build_install_mk8_pr.py --game hollow-knight --game-folder "$hk_game_folder" --cpu-bc --trace-transfers
+```
+
+If the build succeeds, open **Hollow Knight CPU BC Test**, start or load a game,
+play for about 30 seconds after gaining control, then collect with:
+
+```bash
+.venv-pr/bin/python devtools/collect_mk8_bc_logs.py --game hollow-knight
+```
+
+GPU snapshots stay off for the initial trace. The installed title and version
+are verified and collected from the actual data manifest. Using BC textures
+does not by itself establish that the game uses the BC buffer-copy path.

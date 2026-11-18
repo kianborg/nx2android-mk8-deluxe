@@ -38,6 +38,7 @@ GAMES = {
     'mk8': ('0100152000022000', 'MK8'),
     'odyssey': ('0100000000010000', 'Odyssey'),
     '3dworld': ('010028600EBDA000', '3D World'),
+    'hollow-knight': ('0100633007D48000', 'Hollow Knight'),
 }
 SUCCESS_MARKER = b'BC CPU buffer upload:'
 TRACE_MARKER = b'BC transfer trace v1:'
@@ -360,7 +361,7 @@ def main():
     p.add_argument('--driver', type=Path, default=home / 'Downloads/turnip_v24.3.0_R9v2.zip')
     p.add_argument('--device')
     p.add_argument('--jobs', type=int, default=2)
-    p.add_argument('--cpu-bc', action='store_true', help='build the separate MK8 CPU BC Test app; default builds the native-BC baseline app')
+    p.add_argument('--cpu-bc', action='store_true', help='build the selected game\'s separate CPU BC Test app; default builds the native-BC baseline app')
     p.add_argument('--clip-depth-test', action='store_true', help='diagnostic Lenovo build with clip-depth conversion; separate app, readback off')
     p.add_argument('--lenovo', action='store_true', help='Lenovo Idea Tab 5G: system Vulkan, no Turnip ZIP, automatic BC selection in a separate test app')
     p.add_argument('--upstream-baseline', action='store_true', help='build a separate unchanged-upstream app with CPU BC forced and GPU readback off')
@@ -422,6 +423,8 @@ def main():
             driver = args.driver.expanduser().resolve()
             if not game.is_dir() or not keys.is_file() or (not system_driver and not driver.is_file()) or args.jobs < 1:
                 raise ValueError('Check --game-folder, --keys, --driver and --jobs')
+            if args.game == 'hollow-knight':
+                print('Original Hollow Knight: the pinned source has no game profile; porter will attempt an experimental port. Startup is unverified.', flush=True)
             work = Path(tempfile.mkdtemp(prefix='mk8-pr-test-', dir=game))
             print(f'Work folder: {work}', flush=True)
             repo = source(work, commit, repository, ordered=package != upstream_package)
